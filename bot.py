@@ -1257,6 +1257,42 @@ async def leave(ctx):
 
 
 # ==========================================
+# BOT STATS (SERVERS / USERS)
+# ==========================================
+
+@bot.command(name="user", aliases=["stats", "botinfo"])
+async def user_stats(ctx):
+
+    total_servers = len(bot.guilds)
+
+    # Sum member counts across all guilds the bot can see.
+    total_users = sum(
+        guild.member_count or 0
+        for guild in bot.guilds
+    )
+
+    embed = discord.Embed(
+        title="📊 Furious Stats",
+        description=(
+            f"🌐 **Servers:** `{total_servers}`\n"
+            f"👥 **Total Users:** `{total_users}`\n"
+            f"🎶 **Active Players:** `{len(bot.voice_clients)}`"
+        ),
+        color=COLOR_MAIN
+    )
+
+    embed.set_thumbnail(
+        url=bot.user.display_avatar.url
+    )
+
+    embed.set_footer(
+        text="Furious Music • Bot Statistics"
+    )
+
+    await ctx.send(embed=embed)
+
+
+# ==========================================
 # PING
 # ==========================================
 
@@ -1441,7 +1477,8 @@ async def help(ctx):
         name="🛠️ Utility",
         value=(
             "`!ping`\n"
-            "`!prefix <new>`"
+            "`!prefix <new>`\n"
+            "`!user`"
         ),
         inline=True
     )
