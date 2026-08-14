@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import discord
@@ -84,6 +85,14 @@ bot = Furious(
     help_command=None
 )
 
+# Per-guild state that isn't tracked by wavelink itself.
+# loop_mode: "off" | "track" | "queue"
+guild_loop_mode = {}
+# Handle to a pending auto-disconnect task, keyed by guild id.
+idle_disconnect_tasks = {}
+
+IDLE_TIMEOUT_SECONDS = 300  # 5 minutes with nothing playing/queued
+
 
 # ==========================================
 # EMBED COLORS
@@ -114,25 +123,52 @@ def basic_embed(
 
 
 def get_artwork(track):
-
-    artwork = getattr(track, "artwork", None)
-
-    if artwork:
-        return artwork
-
-    return None
+    return getattr(track, "artwork", None)
 
 
-def music_control_bar():
+def format_time(ms):
+    if ms is None:
+        return "00:00"
+
+    total_seconds = int(ms // 1000)
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def music_progress_bar(position_ms, length_ms, bar_length=20):
+    """Builds a real progress bar based on current playback position."""
+
+    if not length_ms:
+        return (
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            "`00:00`　　　　　　　　　`00:00`"
+        )
+
+    ratio = max(0.0, min(1.0, position_ms / length_ms))
+    filled = int(bar_length * ratio)
+
+    bar = "▬" * filled + "🔘" + "▬" * (bar_length - filled)
 
     return (
-        "▶️  ⏮️  ⏸️  ⏭️  ⏹️\n\n"
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-        "`00:00`　　　　　　　　　`00:00`"
+        f"{bar}\n"
+        f"`{format_time(position_ms)}`　　　　　　　　　`{format_time(length_ms)}`"
     )
 
 
-def create_now_playing_embed(track):
+def loop_mode_label(mode):
+    return {
+        "off": "Off",
+        "track": "🔂 Track",
+        "queue": "🔁 Queue",
+    }.get(mode, "Off")
+
+
+def create_now_playing_embed(track, player=None):
 
     artist = getattr(
         track,
@@ -140,12 +176,20 @@ def create_now_playing_embed(track):
         "Unknown Artist"
     )
 
+    position = getattr(player, "position", 0) if player else 0
+    length = getattr(track, "length", None)
+
+    mode = guild_loop_mode.get(
+        player.guild.id, "off"
+    ) if player and player.guild else "off"
+
     embed = discord.Embed(
         title="🎵 Now Playing",
         description=(
             f"## {track.title}\n"
-            f"🎤 **Artist:** `{artist}`\n\n"
-            f"{music_control_bar()}"
+            f"🎤 **Artist:** `{artist}`\n"
+            f"🔁 **Loop:** `{loop_mode_label(mode)}`\n\n"
+            f"{music_progress_bar(position, length)}"
         ),
         color=COLOR_MUSIC
     )
@@ -156,7 +200,7 @@ def create_now_playing_embed(track):
         embed.set_image(url=artwork)
 
     embed.set_footer(
-        text="Furious Music • !pause • !resume • !skip • !stop"
+        text="Furious Music • Use the buttons below to control playback"
     )
 
     return embed
@@ -208,6 +252,92 @@ def create_queue_embed(player):
 
 
 # ==========================================
+# PLAYBACK CONTROL VIEW (real buttons)
+# ==========================================
+
+class MusicControlView(discord.ui.View):
+    """Interactive buttons attached to the Now Playing embed."""
+
+    def __init__(self, guild_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+    async def _get_player(self, interaction):
+        player = interaction.guild.voice_client
+
+        if not player:
+            await interaction.response.send_message(
+                "I'm not connected to a voice channel.",
+                ephemeral=True
+            )
+            return None
+
+        if not interaction.user.voice or interaction.user.voice.channel != player.channel:
+            await interaction.response.send_message(
+                "You need to be in the same voice channel to do that.",
+                ephemeral=True
+            )
+            return None
+
+        return player
+
+    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary)
+    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = await self._get_player(interaction)
+        if not player:
+            return
+
+        if player.paused:
+            await player.pause(False)
+            button.emoji = "⏸️"
+            await interaction.response.edit_message(view=self)
+        else:
+            await player.pause(True)
+            button.emoji = "▶️"
+            await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = await self._get_player(interaction)
+        if not player:
+            return
+
+        if not player.playing:
+            await interaction.response.send_message(
+                "Nothing is playing right now.", ephemeral=True
+            )
+            return
+
+        await player.skip()
+        await interaction.response.send_message("⏭️ Skipped.", ephemeral=True)
+
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = await self._get_player(interaction)
+        if not player:
+            return
+
+        player.queue.clear()
+        await player.stop()
+        await interaction.response.send_message("⏹️ Stopped and cleared the queue.", ephemeral=True)
+
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
+    async def toggle_loop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = await self._get_player(interaction)
+        if not player:
+            return
+
+        order = ["off", "track", "queue"]
+        current = guild_loop_mode.get(self.guild_id, "off")
+        next_mode = order[(order.index(current) + 1) % len(order)]
+        guild_loop_mode[self.guild_id] = next_mode
+
+        await interaction.response.send_message(
+            f"🔁 Loop mode set to **{loop_mode_label(next_mode)}**.", ephemeral=True
+        )
+
+
+# ==========================================
 # EVENTS
 # ==========================================
 
@@ -236,14 +366,105 @@ async def on_wavelink_track_end(payload):
 
     player = payload.player
 
-    if not player:
+    if not player or not player.guild:
         return
 
+    # Avoid double-handling when a track is replaced manually (e.g. !skip
+    # calling player.play() directly elsewhere, or !stop).
+    if getattr(payload, "reason", None) == "replaced":
+        return
+
+    guild_id = player.guild.id
+    mode = guild_loop_mode.get(guild_id, "off")
+    finished_track = getattr(payload, "track", None)
+
+    # Track loop: replay the same track.
+    if mode == "track" and finished_track:
+        await player.play(finished_track)
+        return
+
+    # Queue loop: put the finished track back at the end before advancing.
+    if mode == "queue" and finished_track:
+        player.queue.put(finished_track)
+
     if player.queue:
+        next_track = player.queue.get()
+        await player.play(next_track)
+        return
 
-        track = player.queue.get()
+    # Nothing left to play — start an idle timer instead of leaving instantly.
+    schedule_idle_disconnect(player)
 
-        await player.play(track)
+
+def schedule_idle_disconnect(player):
+    guild_id = player.guild.id
+
+    existing = idle_disconnect_tasks.get(guild_id)
+    if existing and not existing.done():
+        existing.cancel()
+
+    async def _idle_leave():
+        try:
+            await asyncio.sleep(IDLE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+        current_player = player.guild.voice_client
+        if current_player and not current_player.playing and not current_player.queue:
+            await current_player.disconnect()
+
+    idle_disconnect_tasks[guild_id] = bot.loop.create_task(_idle_leave())
+
+
+def cancel_idle_disconnect(guild_id):
+    task = idle_disconnect_tasks.get(guild_id)
+    if task and not task.done():
+        task.cancel()
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Auto-leave if the bot ends up alone in a voice channel.
+    if member.bot:
+        return
+
+    for voice_client in bot.voice_clients:
+        channel = voice_client.channel
+        if channel and len([m for m in channel.members if not m.bot]) == 0:
+            await voice_client.disconnect()
+
+
+@bot.event
+async def on_command_error(ctx, error):
+
+    if isinstance(error, commands.CommandNotFound):
+        return
+
+    if isinstance(error, commands.MissingRequiredArgument):
+        embed = basic_embed(
+            "⚠️ Missing Argument",
+            f"You're missing the `{error.param.name}` argument.\n"
+            f"Try `!help` to see how this command is used.",
+            COLOR_WARNING
+        )
+        return await ctx.send(embed=embed)
+
+    if isinstance(error, commands.BadArgument):
+        embed = basic_embed(
+            "⚠️ Invalid Argument",
+            "That argument wasn't in the right format.",
+            COLOR_WARNING
+        )
+        return await ctx.send(embed=embed)
+
+    print(f"Unhandled command error in !{ctx.command}: {error}")
+
+    embed = basic_embed(
+        "❌ Unexpected Error",
+        f"`{type(error).__name__}`",
+        COLOR_ERROR
+    )
+    await ctx.send(embed=embed)
 
 
 # ==========================================
@@ -364,6 +585,8 @@ async def play(ctx, *, query: str):
     if not player:
         return
 
+    cancel_idle_disconnect(ctx.guild.id)
+
     try:
 
         tracks = await wavelink.Playable.search(
@@ -428,11 +651,12 @@ async def play(ctx, *, query: str):
         await player.play(track)
 
         embed = create_now_playing_embed(
-            track
+            track, player
         )
 
         await ctx.send(
-            embed=embed
+            embed=embed,
+            view=MusicControlView(ctx.guild.id)
         )
 
     except Exception as e:
@@ -655,6 +879,7 @@ async def stop(ctx):
 
     try:
 
+        guild_loop_mode[ctx.guild.id] = "off"
         player.queue.clear()
 
         await player.stop()
@@ -723,6 +948,141 @@ async def queue(ctx):
 
 
 # ==========================================
+# CLEAR / REMOVE / SHUFFLE
+# ==========================================
+
+@bot.command()
+async def clear(ctx):
+
+    player = ctx.guild.voice_client
+
+    if not player or not player.queue:
+        embed = basic_embed(
+            "📭 Queue Empty",
+            "There's nothing in the queue to clear.",
+            COLOR_WARNING
+        )
+        return await ctx.send(embed=embed)
+
+    player.queue.clear()
+
+    embed = basic_embed(
+        "🧹 Queue Cleared",
+        "All queued tracks have been removed.",
+        COLOR_SUCCESS
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def remove(ctx, index: int):
+
+    player = ctx.guild.voice_client
+
+    if not player or not player.queue:
+        embed = basic_embed(
+            "📭 Queue Empty",
+            "There's nothing in the queue to remove.",
+            COLOR_WARNING
+        )
+        return await ctx.send(embed=embed)
+
+    tracks = list(player.queue)
+
+    if index < 1 or index > len(tracks):
+        embed = basic_embed(
+            "⚠️ Invalid Position",
+            f"Give me a number between `1` and `{len(tracks)}`.",
+            COLOR_WARNING
+        )
+        return await ctx.send(embed=embed)
+
+    removed = tracks.pop(index - 1)
+    player.queue.clear()
+    for t in tracks:
+        player.queue.put(t)
+
+    embed = basic_embed(
+        "🗑️ Removed",
+        f"Removed **{removed.title}** from the queue.",
+        COLOR_SUCCESS
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def shuffle(ctx):
+
+    player = ctx.guild.voice_client
+
+    if not player or not player.queue:
+        embed = basic_embed(
+            "📭 Queue Empty",
+            "There's nothing in the queue to shuffle.",
+            COLOR_WARNING
+        )
+        return await ctx.send(embed=embed)
+
+    player.queue.shuffle()
+
+    embed = basic_embed(
+        "🔀 Queue Shuffled",
+        "The upcoming tracks have been shuffled.",
+        COLOR_SUCCESS
+    )
+    await ctx.send(embed=embed)
+
+
+# ==========================================
+# LOOP
+# ==========================================
+
+@bot.command(name="loop")
+async def loop_cmd(ctx, mode: str = None):
+
+    player = ctx.guild.voice_client
+
+    if not player:
+        embed = basic_embed(
+            "❌ Not Connected",
+            "I'm not currently in a voice channel.",
+            COLOR_ERROR
+        )
+        return await ctx.send(embed=embed)
+
+    valid = {"off", "track", "queue"}
+
+    if mode is None:
+        current = guild_loop_mode.get(ctx.guild.id, "off")
+        embed = basic_embed(
+            "🔁 Loop Status",
+            f"Current mode: **{loop_mode_label(current)}**\n"
+            f"Use `!loop off|track|queue` to change it.",
+            COLOR_MAIN
+        )
+        return await ctx.send(embed=embed)
+
+    mode = mode.lower()
+
+    if mode not in valid:
+        embed = basic_embed(
+            "⚠️ Invalid Mode",
+            "Choose one of: `off`, `track`, `queue`.",
+            COLOR_WARNING
+        )
+        return await ctx.send(embed=embed)
+
+    guild_loop_mode[ctx.guild.id] = mode
+
+    embed = basic_embed(
+        "🔁 Loop Updated",
+        f"Loop mode set to **{loop_mode_label(mode)}**.",
+        COLOR_SUCCESS
+    )
+    await ctx.send(embed=embed)
+
+
+# ==========================================
 # NOW PLAYING
 # ==========================================
 
@@ -742,11 +1102,12 @@ async def nowplaying(ctx):
         return await ctx.send(embed=embed)
 
     embed = create_now_playing_embed(
-        player.current
+        player.current, player
     )
 
     await ctx.send(
-        embed=embed
+        embed=embed,
+        view=MusicControlView(ctx.guild.id)
     )
 
 
@@ -843,6 +1204,8 @@ async def leave(ctx):
 
     try:
 
+        cancel_idle_disconnect(ctx.guild.id)
+        guild_loop_mode[ctx.guild.id] = "off"
         player.queue.clear()
 
         await player.disconnect()
@@ -905,7 +1268,10 @@ async def help(ctx):
         value=(
             "`!queue`\n"
             "`!nowplaying`\n"
-            "`!volume <0-100>`"
+            "`!volume <0-100>`\n"
+            "`!shuffle`\n"
+            "`!remove <#>`\n"
+            "`!clear`"
         ),
         inline=True
     )
@@ -914,7 +1280,8 @@ async def help(ctx):
         name="🔊 Voice",
         value=(
             "`!join`\n"
-            "`!leave`"
+            "`!leave`\n"
+            "`!loop <off|track|queue>`"
         ),
         inline=True
     )
@@ -945,374 +1312,5 @@ async def help(ctx):
 # ==========================================
 
 print("🚀 Starting Furious...")
-
-bot.run(TOKEN)        )
-
-
-# ==========================================
-# PLAY
-# ==========================================
-
-@bot.command()
-async def play(ctx, *, query: str):
-
-    player = await get_player(ctx)
-
-    if not player:
-        return
-
-    try:
-
-        tracks = await wavelink.Playable.search(
-            query
-        )
-
-        if not tracks:
-
-            return await ctx.send(
-                "âŒ No results found."
-            )
-
-        track = tracks[0]
-
-        if player.playing or player.paused:
-
-            player.queue.put(track)
-
-            await ctx.send(
-                f"âž• Added to queue: "
-                f"**{track.title}**"
-            )
-
-        else:
-
-            await player.play(track)
-
-            await ctx.send(
-                f"â–¶ï¸ Playing: "
-                f"**{track.title}**"
-            )
-
-    except Exception as e:
-
-        print(f"Play error: {e}")
-
-        await ctx.send(
-            f"âŒ Playback error: "
-            f"`{type(e).__name__}`"
-        )
-
-
-# ==========================================
-# SKIP
-# ==========================================
-
-@bot.command()
-async def skip(ctx):
-
-    player = ctx.guild.voice_client
-
-    if not player or not player.playing:
-
-        return await ctx.send(
-            "âŒ Nothing is playing."
-        )
-
-    try:
-
-        await player.skip()
-
-        await ctx.send(
-            "â­ï¸ Skipped."
-        )
-
-    except Exception as e:
-
-        print(f"Skip error: {e}")
-
-        await ctx.send(
-            f"âŒ Skip failed: "
-            f"`{type(e).__name__}`"
-        )
-
-
-# ==========================================
-# PAUSE
-# ==========================================
-
-@bot.command()
-async def pause(ctx):
-
-    player = ctx.guild.voice_client
-
-    if not player or not player.playing:
-
-        return await ctx.send(
-            "âŒ Nothing is playing."
-        )
-
-    try:
-
-        await player.pause(True)
-
-        await ctx.send(
-            "â¸ï¸ Paused."
-        )
-
-    except Exception as e:
-
-        print(f"Pause error: {e}")
-
-        await ctx.send(
-            f"âŒ Pause failed: "
-            f"`{type(e).__name__}`"
-        )
-
-
-# ==========================================
-# RESUME
-# ==========================================
-
-@bot.command()
-async def resume(ctx):
-
-    player = ctx.guild.voice_client
-
-    if not player:
-
-        return await ctx.send(
-            "âŒ I'm not in a voice channel."
-        )
-
-    try:
-
-        await player.pause(False)
-
-        await ctx.send(
-            "â–¶ï¸ Resumed."
-        )
-
-    except Exception as e:
-
-        print(f"Resume error: {e}")
-
-        await ctx.send(
-            f"âŒ Resume failed: "
-            f"`{type(e).__name__}`"
-        )
-
-
-# ==========================================
-# STOP
-# ==========================================
-
-@bot.command()
-async def stop(ctx):
-
-    player = ctx.guild.voice_client
-
-    if not player:
-
-        return await ctx.send(
-            "âŒ I'm not in a voice channel."
-        )
-
-    try:
-
-        player.queue.clear()
-
-        await player.stop()
-
-        await ctx.send(
-            "â¹ï¸ Stopped and cleared the queue."
-        )
-
-    except Exception as e:
-
-        print(f"Stop error: {e}")
-
-        await ctx.send(
-            f"âŒ Stop failed: "
-            f"`{type(e).__name__}`"
-        )
-
-
-# ==========================================
-# QUEUE
-# ==========================================
-
-@bot.command()
-async def queue(ctx):
-
-    player = ctx.guild.voice_client
-
-    if not player:
-
-        return await ctx.send(
-            "âŒ Nothing is playing."
-        )
-
-    if not player.queue:
-
-        return await ctx.send(
-            "ðŸ“­ Queue is empty."
-        )
-
-    tracks = list(player.queue)
-
-    text = "\n".join(
-        f"`{i + 1}.` {track.title}"
-        for i, track in enumerate(tracks[:10])
-    )
-
-    await ctx.send(
-        f"ðŸŽµ **Furious Queue**\n{text}"
-    )
-
-
-# ==========================================
-# NOW PLAYING
-# ==========================================
-
-@bot.command()
-async def nowplaying(ctx):
-
-    player = ctx.guild.voice_client
-
-    if not player or not player.current:
-
-        return await ctx.send(
-            "âŒ Nothing is playing."
-        )
-
-    await ctx.send(
-        f"ðŸŽ¶ **Now Playing**\n"
-        f"**{player.current.title}**"
-    )
-
-
-# ==========================================
-# VOLUME
-# ==========================================
-
-@bot.command()
-async def volume(ctx, value: int):
-
-    player = ctx.guild.voice_client
-
-    if not player:
-
-        return await ctx.send(
-            "âŒ I'm not in a voice channel."
-        )
-
-    if not 0 <= value <= 100:
-
-        return await ctx.send(
-            "âŒ Volume must be between 0 and 100."
-        )
-
-    try:
-
-        await player.set_volume(value)
-
-        await ctx.send(
-            f"ðŸ”Š Volume set to **{value}%**"
-        )
-
-    except Exception as e:
-
-        print(f"Volume error: {e}")
-
-        await ctx.send(
-            f"âŒ Volume failed: "
-            f"`{type(e).__name__}`"
-        )
-
-
-# ==========================================
-# LEAVE
-# ==========================================
-
-@bot.command()
-async def leave(ctx):
-
-    player = ctx.guild.voice_client
-
-    if not player:
-
-        return await ctx.send(
-            "âŒ I'm not in a voice channel."
-        )
-
-    try:
-
-        player.queue.clear()
-
-        await player.disconnect()
-
-        await ctx.send(
-            "ðŸ‘‹ Left the voice channel."
-        )
-
-    except Exception as e:
-
-        print(f"Leave error: {e}")
-
-        await ctx.send(
-            f"âŒ Leave failed: "
-            f"`{type(e).__name__}`"
-        )
-
-
-# ==========================================
-# HELP
-# ==========================================
-
-@bot.command()
-async def help(ctx):
-
-    embed = discord.Embed(
-        title="ðŸŽµ Furious Music",
-        description="Music commands",
-        color=discord.Color.blurple()
-    )
-
-    embed.add_field(
-        name="Playback",
-        value=(
-            "`!play <song>`\n"
-            "`!pause`\n"
-            "`!resume`\n"
-            "`!skip`\n"
-            "`!stop`"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="Queue",
-        value=(
-            "`!queue`\n"
-            "`!nowplaying`\n"
-            "`!volume <0-100>`"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="Voice",
-        value="`!join`  `!leave`",
-        inline=False
-    )
-
-    await ctx.send(embed=embed)
-
-
-# ==========================================
-# START
-# ==========================================
-
-print("ðŸš€ Starting Furious...")
 
 bot.run(TOKEN)
