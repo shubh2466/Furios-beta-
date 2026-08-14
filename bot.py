@@ -196,7 +196,7 @@ def create_now_playing_embed(track, player=None):
     ) if player and player.guild else "off"
 
     embed = discord.Embed(
-        title="🎵 Now Playing",
+        title="<:214004pixelspotify:1537699774596386926> Now Playing",
         description=(
             f"## {track.title}\n"
             f"🎤 **Artist:** `{artist}`\n"
@@ -236,7 +236,7 @@ def create_queue_embed(player):
     )
 
     embed = discord.Embed(
-        title="🎵 Furious Queue",
+        title="<:214004pixelspotify:1537699774596386926> Furious Queue",
         description=text,
         color=COLOR_MUSIC
     )
@@ -293,7 +293,10 @@ class MusicControlView(discord.ui.View):
 
         return player
 
-    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        emoji=discord.PartialEmoji(name="776450pause", id=1537702507210612786),
+        style=discord.ButtonStyle.secondary
+    )
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = await self._get_player(interaction)
         if not player:
@@ -301,14 +304,18 @@ class MusicControlView(discord.ui.View):
 
         if player.paused:
             await player.pause(False)
-            button.emoji = "⏸️"
+            button.emoji = discord.PartialEmoji(name="776450pause", id=1537702507210612786)
             await interaction.response.edit_message(view=self)
         else:
             await player.pause(True)
+            # No custom "resume/play" emoji was provided, so this one stays unicode.
             button.emoji = "▶️"
             await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        emoji=discord.PartialEmoji(name="22838skip", id=1537702524218511452),
+        style=discord.ButtonStyle.secondary
+    )
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = await self._get_player(interaction)
         if not player:
@@ -321,7 +328,7 @@ class MusicControlView(discord.ui.View):
             return
 
         await player.skip()
-        await interaction.response.send_message("⏭️ Skipped.", ephemeral=True)
+        await interaction.response.send_message("<:22838skip:1537702524218511452> Skipped.", ephemeral=True)
 
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -368,7 +375,7 @@ async def on_ready():
 async def on_wavelink_node_ready(payload):
 
     print(
-        f"✅ Lavalink connected: "
+        f"<:763305tick:1537700918722691133> Lavalink connected: "
         f"{payload.node.identifier}"
     )
 
@@ -481,7 +488,7 @@ async def on_command_error(ctx, error):
     print(f"Unhandled command error in !{ctx.command}: {error}")
 
     embed = basic_embed(
-        "❌ Unexpected Error",
+        "<a:880726error:1537700477955735622> Unexpected Error",
         f"`{type(error).__name__}`",
         COLOR_ERROR
     )
@@ -586,7 +593,7 @@ async def join(ctx):
         print(f"Join error: {e}")
 
         embed = basic_embed(
-            "❌ Failed to Join",
+            "<a:880726error:1537700477955735622> Failed to Join",
             f"Voice connection failed:\n`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -641,7 +648,7 @@ async def play(ctx, *, query: str):
             )
 
             embed = discord.Embed(
-                title="<:763305tick:1537700918722691133> Added to Queue",
+                title="➕ Added to Queue",
                 description=(
                     f"## {track.title}\n\n"
                     f"🎤 **Artist:** `{artist}`\n"
@@ -717,7 +724,7 @@ async def skip(ctx):
         await player.skip()
 
         embed = basic_embed(
-            "<:763305tick:1537700918722691133> Track Skipped",
+            "<:22838skip:1537702524218511452> Track Skipped",
             "The current track has been skipped.",
             COLOR_WARNING
         )
@@ -773,10 +780,10 @@ async def pause(ctx):
         )
 
         embed = discord.Embed(
-            title="<:763305tick:1537700918722691133> Music Paused",
+            title="<:776450pause:1537702507210612786> Music Paused",
             description=(
                 f"## {title}\n\n"
-                "⏸️ **Playback Paused**\n\n"
+                "<:776450pause:1537702507210612786> **Playback Paused**\n\n"
                 "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
             ),
             color=COLOR_PAUSE
@@ -802,7 +809,7 @@ async def pause(ctx):
         print(f"Pause error: {e}")
 
         embed = basic_embed(
-            "❌ Pause Failed",
+            "<a:880726error:1537700477955735622> Pause Failed",
             f"`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -842,7 +849,7 @@ async def resume(ctx):
         )
 
         embed = discord.Embed(
-            title="<:214004pixelspotify:1537699774596386926> Music Resumed",
+            title="▶️ Music Resumed",
             description=(
                 f"## {title}\n\n"
                 "▶️ **Now Playing**\n\n"
@@ -891,7 +898,7 @@ async def stop(ctx):
     if not player:
 
         embed = basic_embed(
-            "❌ Not Connected",
+            "<a:880726error:1537700477955735622> Not Connected",
             "I'm not currently in a voice channel.",
             COLOR_ERROR
         )
@@ -906,7 +913,7 @@ async def stop(ctx):
         await player.stop()
 
         embed = basic_embed(
-            "<:763305tick:1537700918722691133> Music Stopped",
+            "⏹️ Music Stopped",
             "Playback stopped and the queue was cleared.",
             COLOR_ERROR
         )
@@ -922,7 +929,7 @@ async def stop(ctx):
         print(f"Stop error: {e}")
 
         embed = basic_embed(
-            "❌ Stop Failed",
+            "<a:880726error:1537700477955735622> Stop Failed",
             f"`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -1065,7 +1072,7 @@ async def loop_cmd(ctx, mode: str = None):
 
     if not player:
         embed = basic_embed(
-            "❌ Not Connected",
+            "<a:880726error:1537700477955735622> Not Connected",
             "I'm not currently in a voice channel.",
             COLOR_ERROR
         )
@@ -1115,7 +1122,7 @@ async def nowplaying(ctx):
     if not player or not player.current:
 
         embed = basic_embed(
-            "❌ Nothing Playing",
+            "<a:880726error:1537700477955735622> Nothing Playing",
             "There is currently no music playing.",
             COLOR_ERROR
         )
@@ -1144,7 +1151,7 @@ async def volume(ctx, value: int):
     if not player:
 
         embed = basic_embed(
-            "❌ Not Connected",
+            "<a:880726error:1537700477955735622> Not Connected",
             "I'm not currently in a voice channel.",
             COLOR_ERROR
         )
@@ -1196,7 +1203,7 @@ async def volume(ctx, value: int):
         print(f"Volume error: {e}")
 
         embed = basic_embed(
-            "❌ Volume Failed",
+            "<a:880726error:1537700477955735622> Volume Failed",
             f"`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -1216,7 +1223,7 @@ async def leave(ctx):
     if not player:
 
         embed = basic_embed(
-            "❌ Not Connected",
+            "<a:880726error:1537700477955735622> Not Connected",
             "I'm not currently in a voice channel.",
             COLOR_ERROR
         )
@@ -1248,7 +1255,7 @@ async def leave(ctx):
         print(f"Leave error: {e}")
 
         embed = basic_embed(
-            "❌ Leave Failed",
+            "<a:880726error:1537700477955735622> Leave Failed",
             f"`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -1359,7 +1366,7 @@ async def prefix(ctx, new_prefix: str = None):
     guild_prefix[ctx.guild.id] = new_prefix
 
     embed = basic_embed(
-        "✅ Prefix Updated",
+        "<:763305tick:1537700918722691133> Prefix Updated",
         f"My prefix is now `{new_prefix}`",
         COLOR_SUCCESS
     )
@@ -1373,7 +1380,7 @@ async def prefix_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
 
         embed = basic_embed(
-            "❌ Missing Permissions",
+            "<a:880726error:1537700477955735622> Missing Permissions",
             "You need the **Manage Server** permission to change the prefix.",
             COLOR_ERROR
         )
@@ -1438,7 +1445,7 @@ async def help(ctx):
     )
 
     embed.add_field(
-        name="🎵 Playback",
+        name="<:214004pixelspotify:1537699774596386926> Playback",
         value=(
             "`!play <song>`\n"
             "`!pause`\n"
