@@ -79,19 +79,31 @@ class Furious(commands.Bot):
         )
 
 
-bot = Furious(
-    command_prefix="!",
-    intents=intents,
-    help_command=None
-)
-
 # Per-guild state that isn't tracked by wavelink itself.
 # loop_mode: "off" | "track" | "queue"
 guild_loop_mode = {}
 # Handle to a pending auto-disconnect task, keyed by guild id.
 idle_disconnect_tasks = {}
+# Per-guild custom prefix (falls back to DEFAULT_PREFIX when unset).
+guild_prefix = {}
+# Per-guild 24/7 mode: stay connected even when idle/alone.
+guild_247_mode = {}
 
+DEFAULT_PREFIX = "!"
 IDLE_TIMEOUT_SECONDS = 300  # 5 minutes with nothing playing/queued
+
+
+def resolve_prefix(bot_, message):
+    if message.guild:
+        return guild_prefix.get(message.guild.id, DEFAULT_PREFIX)
+    return DEFAULT_PREFIX
+
+
+bot = Furious(
+    command_prefix=resolve_prefix,
+    intents=intents,
+    help_command=None
+)
 
 
 # ==========================================
@@ -399,6 +411,9 @@ async def on_wavelink_track_end(payload):
 def schedule_idle_disconnect(player):
     guild_id = player.guild.id
 
+    if guild_247_mode.get(guild_id):
+        return
+
     existing = idle_disconnect_tasks.get(guild_id)
     if existing and not existing.done():
         existing.cancel()
@@ -407,6 +422,9 @@ def schedule_idle_disconnect(player):
         try:
             await asyncio.sleep(IDLE_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
+            return
+
+        if guild_247_mode.get(guild_id):
             return
 
         current_player = player.guild.voice_client
@@ -429,6 +447,9 @@ async def on_voice_state_update(member, before, after):
         return
 
     for voice_client in bot.voice_clients:
+        if guild_247_mode.get(voice_client.guild.id):
+            continue
+
         channel = voice_client.channel
         if channel and len([m for m in channel.members if not m.bot]) == 0:
             await voice_client.disconnect()
@@ -1236,6 +1257,135 @@ async def leave(ctx):
 
 
 # ==========================================
+# PING
+# ==========================================
+
+@bot.command()
+async def ping(ctx):
+
+    bot_latency = round(bot.latency * 1000)
+
+    player = ctx.guild.voice_client
+    node_latency = None
+
+    if player and getattr(player, "node", None):
+        node_latency = round(player.node.heartbeat)
+
+    description = f"🌐 **Bot:** `{bot_latency}ms`"
+
+    if node_latency is not None:
+        description += f"\n🎧 **Lavalink Node:** `{node_latency}ms`"
+
+    embed = basic_embed(
+        "🏓 Pong!",
+        description,
+        COLOR_MAIN
+    )
+
+    embed.set_footer(
+        text="Furious Music • Latency"
+    )
+
+    await ctx.send(embed=embed)
+
+
+# ==========================================
+# PREFIX
+# ==========================================
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def prefix(ctx, new_prefix: str = None):
+
+    if new_prefix is None:
+
+        current = guild_prefix.get(ctx.guild.id, DEFAULT_PREFIX)
+
+        embed = basic_embed(
+            "⚙️ Current Prefix",
+            f"My prefix here is `{current}`\n"
+            f"Use `{current}prefix <new_prefix>` to change it.",
+            COLOR_MAIN
+        )
+
+        return await ctx.send(embed=embed)
+
+    if len(new_prefix) > 5:
+
+        embed = basic_embed(
+            "⚠️ Invalid Prefix",
+            "Prefix must be 5 characters or fewer.",
+            COLOR_WARNING
+        )
+
+        return await ctx.send(embed=embed)
+
+    guild_prefix[ctx.guild.id] = new_prefix
+
+    embed = basic_embed(
+        "✅ Prefix Updated",
+        f"My prefix is now `{new_prefix}`",
+        COLOR_SUCCESS
+    )
+
+    await ctx.send(embed=embed)
+
+
+@prefix.error
+async def prefix_error(ctx, error):
+
+    if isinstance(error, commands.MissingPermissions):
+
+        embed = basic_embed(
+            "❌ Missing Permissions",
+            "You need the **Manage Server** permission to change the prefix.",
+            COLOR_ERROR
+        )
+
+        await ctx.send(embed=embed)
+
+
+# ==========================================
+# 24/7 MODE
+# ==========================================
+
+@bot.command(name="247")
+async def twentyfourseven(ctx):
+
+    guild_id = ctx.guild.id
+
+    currently_on = guild_247_mode.get(guild_id, False)
+    guild_247_mode[guild_id] = not currently_on
+
+    if guild_247_mode[guild_id]:
+
+        embed = basic_embed(
+            "♾️ 24/7 Mode Enabled",
+            "I'll stay in the voice channel even when idle or alone.",
+            COLOR_SUCCESS
+        )
+
+    else:
+
+        embed = basic_embed(
+            "♾️ 24/7 Mode Disabled",
+            "I'll auto-disconnect after being idle or left alone again.",
+            COLOR_WARNING
+        )
+
+        # Re-arm the idle timer immediately if there's nothing playing.
+        player = ctx.guild.voice_client
+        if player and not player.playing and not player.queue:
+            schedule_idle_disconnect(player)
+
+    embed.set_footer(
+        text="Furious Music • Voice System"
+    )
+
+    await ctx.send(embed=embed)
+
+
+# ==========================================
 # HELP
 # ==========================================
 
@@ -1281,7 +1431,17 @@ async def help(ctx):
         value=(
             "`!join`\n"
             "`!leave`\n"
-            "`!loop <off|track|queue>`"
+            "`!loop <off|track|queue>`\n"
+            "`!247`"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🛠️ Utility",
+        value=(
+            "`!ping`\n"
+            "`!prefix <new>`"
         ),
         inline=True
     )
@@ -1292,9 +1452,11 @@ async def help(ctx):
         inline=False
     )
 
+    current_prefix = guild_prefix.get(ctx.guild.id, DEFAULT_PREFIX)
+
     embed.add_field(
         name="⚡ Prefix",
-        value="`!`",
+        value=f"`{current_prefix}`",
         inline=True
     )
 
