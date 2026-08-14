@@ -502,7 +502,7 @@ async def get_player(ctx):
     if not ctx.author.voice:
 
         embed = basic_embed(
-            "❌ Voice Channel Required",
+            "<a:880726error:1537700477955735622> Voice Channel Required",
             "Join a voice channel first.",
             COLOR_ERROR
         )
@@ -526,7 +526,7 @@ async def get_player(ctx):
         )
 
         embed = basic_embed(
-            "❌ Voice Connection Failed",
+            "<a:880726error:1537700477955735622> Voice Connection Failed",
             f"`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -546,7 +546,7 @@ async def join(ctx):
     if not ctx.author.voice:
 
         embed = basic_embed(
-            "❌ Voice Channel Required",
+            "<a:880726error:1537700477955735622> Voice Channel Required",
             "Join a voice channel first.",
             COLOR_ERROR
         )
@@ -617,7 +617,7 @@ async def play(ctx, *, query: str):
         if not tracks:
 
             embed = basic_embed(
-                "❌ No Results",
+                "<a:880726error:1537700477955735622> No Results",
                 f"No music results found for:\n`{query}`",
                 COLOR_ERROR
             )
@@ -641,7 +641,7 @@ async def play(ctx, *, query: str):
             )
 
             embed = discord.Embed(
-                title="➕ Added to Queue",
+                title="<:763305tick:1537700918722691133> Added to Queue",
                 description=(
                     f"## {track.title}\n\n"
                     f"🎤 **Artist:** `{artist}`\n"
@@ -685,7 +685,7 @@ async def play(ctx, *, query: str):
         print(f"Play error: {e}")
 
         embed = basic_embed(
-            "❌ Playback Error",
+            "<a:880726error:1537700477955735622> Playback Error",
             f"Something went wrong:\n`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -705,7 +705,7 @@ async def skip(ctx):
     if not player or not player.playing:
 
         embed = basic_embed(
-            "❌ Nothing Playing",
+            "<a:880726error:1537700477955735622> Nothing Playing",
             "There is no track currently playing.",
             COLOR_ERROR
         )
@@ -717,7 +717,7 @@ async def skip(ctx):
         await player.skip()
 
         embed = basic_embed(
-            "⏭️ Track Skipped",
+            "<:763305tick:1537700918722691133> Track Skipped",
             "The current track has been skipped.",
             COLOR_WARNING
         )
@@ -733,7 +733,7 @@ async def skip(ctx):
         print(f"Skip error: {e}")
 
         embed = basic_embed(
-            "❌ Skip Failed",
+            "<a:880726error:1537700477955735622> Skip Failed",
             f"`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -753,7 +753,7 @@ async def pause(ctx):
     if not player or not player.playing:
 
         embed = basic_embed(
-            "❌ Nothing Playing",
+            "<a:880726error:1537700477955735622> Nothing Playing",
             "There is no music currently playing.",
             COLOR_ERROR
         )
@@ -773,7 +773,7 @@ async def pause(ctx):
         )
 
         embed = discord.Embed(
-            title="⏸️ Music Paused",
+            title="<:763305tick:1537700918722691133> Music Paused",
             description=(
                 f"## {title}\n\n"
                 "⏸️ **Playback Paused**\n\n"
@@ -822,7 +822,7 @@ async def resume(ctx):
     if not player:
 
         embed = basic_embed(
-            "❌ Not Connected",
+            "<a:880726error:1537700477955735622> Not Connected",
             "I'm not currently in a voice channel.",
             COLOR_ERROR
         )
@@ -842,7 +842,7 @@ async def resume(ctx):
         )
 
         embed = discord.Embed(
-            title="▶️ Music Resumed",
+            title="<:214004pixelspotify:1537699774596386926> Music Resumed",
             description=(
                 f"## {title}\n\n"
                 "▶️ **Now Playing**\n\n"
@@ -871,7 +871,7 @@ async def resume(ctx):
         print(f"Resume error: {e}")
 
         embed = basic_embed(
-            "❌ Resume Failed",
+            "<a:880726error:1537700477955735622> Resume Failed",
             f"`{type(e).__name__}`",
             COLOR_ERROR
         )
@@ -906,7 +906,7 @@ async def stop(ctx):
         await player.stop()
 
         embed = basic_embed(
-            "⏹️ Music Stopped",
+            "<:763305tick:1537700918722691133> Music Stopped",
             "Playback stopped and the queue was cleared.",
             COLOR_ERROR
         )
