@@ -1,13 +1,10 @@
 import asyncio
-import io
 import os
 
-import aiohttp
 import discord
 import wavelink
 from discord.ext import commands
 from dotenv import load_dotenv
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 
 # ==========================================
@@ -65,8 +62,6 @@ class Furious(commands.Bot):
 
     async def setup_hook(self):
 
-        self.session = aiohttp.ClientSession()
-
         node = wavelink.Node(
             uri=f"https://{LAVALINK_HOST}:{LAVALINK_PORT}",
             password=LAVALINK_PASSWORD
@@ -83,11 +78,6 @@ class Furious(commands.Bot):
             cache_capacity=100
         )
 
-    async def close(self):
-        if getattr(self, "session", None):
-            await self.session.close()
-        await super().close()
-
 
 # Per-guild state that isn't tracked by wavelink itself.
 # loop_mode: "off" | "track" | "queue"
@@ -98,15 +88,6 @@ idle_disconnect_tasks = {}
 guild_prefix = {}
 # Per-guild 24/7 mode: stay connected even when idle/alone.
 guild_247_mode = {}
-# Play/like stats, keyed by a stable track identifier (see track_key()).
-track_play_counts = {}
-track_likes = {}
-# Last known requester per track identifier.
-track_requesters = {}
-# Recently finished tracks per guild, for the "Previous" button.
-guild_history = {}
-# The text channel to post auto-advance "Now Playing" cards into.
-guild_now_channel = {}
 
 DEFAULT_PREFIX = "!"
 IDLE_TIMEOUT_SECONDS = 300  # 5 minutes with nothing playing/queued
@@ -199,221 +180,6 @@ def loop_mode_label(mode):
     }.get(mode, "Off")
 
 
-def track_key(track):
-    """A stable-ish identifier for a track, used for stats/likes/requester lookups."""
-    return str(
-        getattr(track, "identifier", None)
-        or getattr(track, "uri", None)
-        or track.title
-    )
-
-
-def bump_play_count(track):
-    key = track_key(track)
-    track_play_counts[key] = track_play_counts.get(key, 0) + 1
-
-
-async def fetch_artwork_bytes(url):
-    if not url:
-        return None
-
-    try:
-        async with bot.session.get(url) as resp:
-            if resp.status == 200:
-                return await resp.read()
-    except Exception as e:
-        print(f"Artwork fetch error: {e}")
-
-    return None
-
-
-def _load_font(bold, size):
-    candidates = (
-        ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
-        if bold else
-        ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
-    )
-
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                pass
-
-    return ImageFont.load_default()
-
-
-def render_now_playing_card(artwork_bytes, title, artist, position_ms, length_ms):
-    """Draws a banner: blurred artwork background, square thumbnail, title/artist,
-    and a real progress bar with a scrub knob + timestamps. Returns a PNG BytesIO."""
-
-    width, height = 900, 260
-
-    base = Image.new("RGB", (width, height), (18, 18, 22))
-    art = None
-
-    if artwork_bytes:
-        try:
-            art = Image.open(io.BytesIO(artwork_bytes)).convert("RGB")
-        except Exception:
-            art = None
-
-    if art:
-        bg = ImageOps.fit(art, (width, height), Image.LANCZOS)
-        bg = bg.filter(ImageFilter.GaussianBlur(20))
-        overlay = Image.new("RGB", (width, height), (0, 0, 0))
-        base = Image.blend(bg, overlay, 0.6)
-
-    draw = ImageDraw.Draw(base)
-
-    thumb_size = 190
-    thumb_x, thumb_y = 30, (height - thumb_size) // 2
-
-    if art:
-        thumb = ImageOps.fit(art, (thumb_size, thumb_size), Image.LANCZOS)
-        mask = Image.new("L", (thumb_size, thumb_size), 0)
-        mask_draw = ImageDraw.Draw(mask)
-        mask_draw.rounded_rectangle(
-            [0, 0, thumb_size, thumb_size], radius=18, fill=255
-        )
-        base.paste(thumb, (thumb_x, thumb_y), mask)
-
-    title_font = _load_font(True, 34)
-    artist_font = _load_font(False, 22)
-    time_font = _load_font(False, 18)
-
-    text_x = thumb_x + thumb_size + 30
-    max_width = width - text_x - 30
-
-    display_title = title
-    while (
-        draw.textlength(display_title, font=title_font) > max_width
-        and len(display_title) > 4
-    ):
-        display_title = display_title[:-4] + "..."
-
-    draw.text((text_x, thumb_y + 8), display_title, font=title_font, fill=(255, 255, 255))
-    draw.text((text_x, thumb_y + 55), artist or "Unknown Artist", font=artist_font, fill=(200, 200, 200))
-
-    bar_x1, bar_x2 = text_x, width - 30
-    bar_y = thumb_y + thumb_size - 25
-
-    ratio = 0.0
-    if length_ms:
-        ratio = max(0.0, min(1.0, (position_ms or 0) / length_ms))
-
-    filled_x = bar_x1 + (bar_x2 - bar_x1) * ratio
-
-    draw.line([(bar_x1, bar_y), (bar_x2, bar_y)], fill=(90, 90, 95), width=6)
-    draw.line([(bar_x1, bar_y), (filled_x, bar_y)], fill=(225, 35, 35), width=6)
-
-    knob_r = 8
-    draw.ellipse(
-        [filled_x - knob_r, bar_y - knob_r, filled_x + knob_r, bar_y + knob_r],
-        fill=(255, 255, 255)
-    )
-
-    draw.text((bar_x1, bar_y + 14), format_time(position_ms), font=time_font, fill=(215, 215, 215))
-    duration_text = format_time(length_ms) if length_ms else "LIVE"
-    duration_width = draw.textlength(duration_text, font=time_font)
-    draw.text((bar_x2 - duration_width, bar_y + 14), duration_text, font=time_font, fill=(215, 215, 215))
-
-    buffer = io.BytesIO()
-    base.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
-
-
-async def build_now_playing_card(player, track):
-    """Builds the (embed, discord.File, view) trio for a rich Now Playing message."""
-
-    artwork_url = get_artwork(track)
-    artwork_bytes = await fetch_artwork_bytes(artwork_url)
-
-    position = getattr(player, "position", 0) or 0
-    length = getattr(track, "length", None)
-    artist = getattr(track, "author", "Unknown Artist")
-
-    image_buffer = await asyncio.to_thread(
-        render_now_playing_card,
-        artwork_bytes,
-        track.title,
-        artist,
-        position,
-        length
-    )
-
-    file = discord.File(image_buffer, filename="now_playing.png")
-
-    key = track_key(track)
-    plays = track_play_counts.get(key, 0)
-    likes = len(track_likes.get(key, set()))
-    requester_id = track_requesters.get(key)
-    requester_line = f"<@{requester_id}>" if requester_id else "Unknown"
-
-    uri = getattr(track, "uri", None)
-    title_line = f"[{track.title}]({uri})" if uri else track.title
-
-    mode = guild_loop_mode.get(player.guild.id, "off") if player.guild else "off"
-
-    embed = discord.Embed(
-        title="<:214004pixelspotify:1537699774596386926> Now Playing",
-        description=f"**{title_line}**",
-        color=COLOR_MUSIC
-    )
-
-    embed.add_field(name="Artist", value=artist or "Unknown Artist", inline=True)
-    embed.add_field(name="Requested By", value=requester_line, inline=True)
-    embed.add_field(name="Queue", value=str(len(player.queue)), inline=True)
-    embed.add_field(
-        name="Song Stats",
-        value=f"▶ **{plays}** Plays　❤ **{likes}** Likes　🔁 {loop_mode_label(mode)}",
-        inline=False
-    )
-
-    embed.set_image(url="attachment://now_playing.png")
-    embed.set_footer(text="Furious Music • Use the buttons below to control playback")
-
-    view = NowPlayingView(player.guild.id, key)
-
-    return embed, file, view
-
-
-async def start_track(player, track, channel=None):
-    """Plays a track, bumps its play count, and (optionally) announces it."""
-
-    await player.play(track)
-    bump_play_count(track)
-
-    if channel:
-        try:
-            embed, file, view = await build_now_playing_card(player, track)
-            await channel.send(embed=embed, file=file, view=view)
-        except Exception as e:
-            print(f"Now playing announce error: {e}")
-
-
-async def get_player_for_interaction(interaction):
-    player = interaction.guild.voice_client
-
-    if not player:
-        await interaction.response.send_message(
-            "I'm not connected to a voice channel.",
-            ephemeral=True
-        )
-        return None
-
-    if not interaction.user.voice or interaction.user.voice.channel != player.channel:
-        await interaction.response.send_message(
-            "You need to be in the same voice channel to do that.",
-            ephemeral=True
-        )
-        return None
-
-    return player
-
-
 def create_now_playing_embed(track, player=None):
 
     artist = getattr(
@@ -501,76 +267,57 @@ def create_queue_embed(player):
 # PLAYBACK CONTROL VIEW (real buttons)
 # ==========================================
 
-class NowPlayingView(discord.ui.View):
-    """Two rows of interactive buttons attached to the Now Playing card."""
+class MusicControlView(discord.ui.View):
+    """Interactive buttons attached to the Now Playing embed."""
 
-    def __init__(self, guild_id, track_key_):
+    def __init__(self, guild_id):
         super().__init__(timeout=None)
         self.guild_id = guild_id
-        self.track_key = track_key_
 
-    async def _refresh_card(self, interaction, player):
-        embed, file, _ = await build_now_playing_card(player, player.current)
-        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+    async def _get_player(self, interaction):
+        player = interaction.guild.voice_client
 
-    # ---------- ROW 0 ----------
-
-    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=0)
-    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
         if not player:
-            return
-
-        history = guild_history.get(self.guild_id, [])
-
-        if not history:
             await interaction.response.send_message(
-                "There's no previous track to go back to.", ephemeral=True
+                "I'm not connected to a voice channel.",
+                ephemeral=True
             )
-            return
+            return None
 
-        prev_track = history.pop()
+        if not interaction.user.voice or interaction.user.voice.channel != player.channel:
+            await interaction.response.send_message(
+                "You need to be in the same voice channel to do that.",
+                ephemeral=True
+            )
+            return None
 
-        if player.current:
-            remaining = list(player.queue)
-            player.queue.clear()
-            player.queue.put(player.current)
-            for t in remaining:
-                player.queue.put(t)
-
-        await interaction.response.send_message("⏮️ Playing the previous track...", ephemeral=True)
-        await start_track(player, prev_track, interaction.channel)
+        return player
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(name="776450pause", id=1537702507210612786),
-        style=discord.ButtonStyle.secondary,
-        row=0
+        style=discord.ButtonStyle.secondary
     )
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
-        if not player or not player.current:
+        player = await self._get_player(interaction)
+        if not player:
             return
 
-        await player.pause(not player.paused)
-        await self._refresh_card(interaction, player)
-
-    @discord.ui.button(emoji="⏪", style=discord.ButtonStyle.secondary, row=0)
-    async def seek_back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
-        if not player or not player.current:
-            return
-
-        new_pos = max(0, (player.position or 0) - 10000)
-        await player.seek(new_pos)
-        await self._refresh_card(interaction, player)
+        if player.paused:
+            await player.pause(False)
+            button.emoji = discord.PartialEmoji(name="776450pause", id=1537702507210612786)
+            await interaction.response.edit_message(view=self)
+        else:
+            await player.pause(True)
+            # No custom "resume/play" emoji was provided, so this one stays unicode.
+            button.emoji = "▶️"
+            await interaction.response.edit_message(view=self)
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(name="22838skip", id=1537702524218511452),
-        style=discord.ButtonStyle.secondary,
-        row=0
+        style=discord.ButtonStyle.secondary
     )
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
+        player = await self._get_player(interaction)
         if not player:
             return
 
@@ -581,30 +328,21 @@ class NowPlayingView(discord.ui.View):
             return
 
         await player.skip()
-        await interaction.response.send_message(
-            "<:22838skip:1537702524218511452> Skipped.", ephemeral=True
-        )
+        await interaction.response.send_message("<:22838skip:1537702524218511452> Skipped.", ephemeral=True)
 
-    # ---------- ROW 1 ----------
-
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
-    async def shuffle_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = await self._get_player(interaction)
         if not player:
             return
 
-        if not player.queue:
-            await interaction.response.send_message(
-                "There's nothing in the queue to shuffle.", ephemeral=True
-            )
-            return
+        player.queue.clear()
+        await player.stop()
+        await interaction.response.send_message("⏹️ Stopped and cleared the queue.", ephemeral=True)
 
-        player.queue.shuffle()
-        await interaction.response.send_message("🔀 Queue shuffled.", ephemeral=True)
-
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
     async def toggle_loop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
+        player = await self._get_player(interaction)
         if not player:
             return
 
@@ -616,39 +354,6 @@ class NowPlayingView(discord.ui.View):
         await interaction.response.send_message(
             f"🔁 Loop mode set to **{loop_mode_label(next_mode)}**.", ephemeral=True
         )
-
-    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, row=1)
-    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
-        if not player:
-            return
-
-        player.queue.clear()
-        await player.stop()
-        await interaction.response.send_message("⏹️ Stopped and cleared the queue.", ephemeral=True)
-
-    @discord.ui.button(emoji="⏩", style=discord.ButtonStyle.secondary, row=1)
-    async def seek_forward(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = await get_player_for_interaction(interaction)
-        if not player or not player.current:
-            return
-
-        length = getattr(player.current, "length", None) or 0
-        new_pos = min(length, (player.position or 0) + 10000) if length else (player.position or 0) + 10000
-        await player.seek(new_pos)
-        await self._refresh_card(interaction, player)
-
-    @discord.ui.button(emoji="❤️", style=discord.ButtonStyle.danger, row=1)
-    async def like(self, interaction: discord.Interaction, button: discord.ui.Button):
-        likers = track_likes.setdefault(self.track_key, set())
-        user_id = interaction.user.id
-
-        if user_id in likers:
-            likers.discard(user_id)
-            await interaction.response.send_message("💔 Removed your like.", ephemeral=True)
-        else:
-            likers.add(user_id)
-            await interaction.response.send_message("❤️ Liked!", ephemeral=True)
 
 
 # ==========================================
@@ -691,17 +396,10 @@ async def on_wavelink_track_end(payload):
     guild_id = player.guild.id
     mode = guild_loop_mode.get(guild_id, "off")
     finished_track = getattr(payload, "track", None)
-    channel = guild_now_channel.get(guild_id)
-
-    if finished_track:
-        history = guild_history.setdefault(guild_id, [])
-        history.append(finished_track)
-        if len(history) > 10:
-            history.pop(0)
 
     # Track loop: replay the same track.
     if mode == "track" and finished_track:
-        await start_track(player, finished_track, channel)
+        await player.play(finished_track)
         return
 
     # Queue loop: put the finished track back at the end before advancing.
@@ -710,7 +408,7 @@ async def on_wavelink_track_end(payload):
 
     if player.queue:
         next_track = player.queue.get()
-        await start_track(player, next_track, channel)
+        await player.play(next_track)
         return
 
     # Nothing left to play — start an idle timer instead of leaving instantly.
@@ -916,7 +614,6 @@ async def play(ctx, *, query: str):
         return
 
     cancel_idle_disconnect(ctx.guild.id)
-    guild_now_channel[ctx.guild.id] = ctx.channel
 
     try:
 
@@ -935,7 +632,6 @@ async def play(ctx, *, query: str):
             return await ctx.send(embed=embed)
 
         track = tracks[0]
-        track_requesters[track_key(track)] = ctx.author.id
 
         # ==================================
         # ADD TO QUEUE
@@ -945,16 +641,20 @@ async def play(ctx, *, query: str):
 
             player.queue.put(track)
 
-            uri = getattr(track, "uri", None)
-            title_line = f"[{track.title}]({uri})" if uri else track.title
+            artist = getattr(
+                track,
+                "author",
+                "Unknown Artist"
+            )
 
             embed = discord.Embed(
-                title="<:763305tick:1537700918722691133> Track Added",
+                title="➕ Added to Queue",
                 description=(
-                    f"**{title_line}** Added to queue by {ctx.author.mention}\n"
+                    f"## {track.title}\n\n"
+                    f"🎤 **Artist:** `{artist}`\n"
                     f"📍 **Position:** `{len(player.queue)}`"
                 ),
-                color=COLOR_MUSIC
+                color=COLOR_WARNING
             )
 
             artwork = get_artwork(track)
@@ -977,14 +677,14 @@ async def play(ctx, *, query: str):
         # ==================================
 
         await player.play(track)
-        bump_play_count(track)
 
-        embed, file, view = await build_now_playing_card(track=track, player=player)
+        embed = create_now_playing_embed(
+            track, player
+        )
 
         await ctx.send(
             embed=embed,
-            file=file,
-            view=view
+            view=MusicControlView(ctx.guild.id)
         )
 
     except Exception as e:
@@ -1429,14 +1129,13 @@ async def nowplaying(ctx):
 
         return await ctx.send(embed=embed)
 
-    guild_now_channel[ctx.guild.id] = ctx.channel
-
-    embed, file, view = await build_now_playing_card(player, player.current)
+    embed = create_now_playing_embed(
+        player.current, player
+    )
 
     await ctx.send(
         embed=embed,
-        file=file,
-        view=view
+        view=MusicControlView(ctx.guild.id)
     )
 
 
