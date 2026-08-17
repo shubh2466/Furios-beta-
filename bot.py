@@ -19,7 +19,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 LAVALINK_HOST = os.getenv(
     "LAVALINK_HOST",
-    "lavalink-2026-production-8c44.up.railway.app"
+    "furiouslavalink-production-3db0.up.railway.app"
 )
 
 LAVALINK_PORT = int(
@@ -60,7 +60,6 @@ idle_tasks = {}
 # ============================================================
 
 intents = discord.Intents.default()
-
 intents.message_content = True
 intents.voice_states = True
 
@@ -78,7 +77,6 @@ class Furious(commands.Bot):
         print("🔌 Connecting to Lavalink...")
         print("========================================")
 
-        # Railway HTTPS endpoint
         uri = f"https://{LAVALINK_HOST}:{LAVALINK_PORT}"
 
         print(f"🌐 Lavalink URI: {uri}")
@@ -230,17 +228,10 @@ def loop_name(mode):
 
 
 # ============================================================
-# SEARCH
+# SEARCH YOUTUBE
 # ============================================================
 
 async def search_youtube(query: str):
-
-    """
-    Search YouTube first.
-
-    Direct URLs are passed directly to Lavalink.
-    Normal searches use ytsearch:.
-    """
 
     query = query.strip()
 
@@ -248,12 +239,11 @@ async def search_youtube(query: str):
         return None
 
     # --------------------------------------------------------
-    # DIRECT URL / VIDEO
+    # DIRECT URL
     # --------------------------------------------------------
 
-    if (
-        query.startswith("https://")
-        or query.startswith("http://")
+    if query.startswith(
+        ("http://", "https://")
     ):
 
         print(
@@ -264,60 +254,43 @@ async def search_youtube(query: str):
             query
         )
 
-        if results:
-            return results[0]
+        if not results:
+            return None
 
-        return None
+        return results[0]
 
     # --------------------------------------------------------
     # YOUTUBE SEARCH
     # --------------------------------------------------------
 
-    youtube_query = f"ytsearch:{query}"
+    identifier = f"ytsearch:{query}"
 
     print(
-        f"🔎 YouTube search: {youtube_query}"
+        f"🔎 Lavalink search: {identifier}"
     )
 
     results = await wavelink.Playable.search(
-        youtube_query
+        identifier
     )
-
-    if results:
-
-        print(
-            f"✅ YouTube found {len(results)} result(s)"
-        )
-
-        return results[0]
-
-    # --------------------------------------------------------
-    # FALLBACK: YOUTUBE MUSIC
-    # --------------------------------------------------------
 
     print(
-        "⚠️ ytsearch returned no results."
+        f"🔎 Search result type: "
+        f"{type(results).__name__}"
     )
 
-    youtube_music_query = f"ytmsearch:{query}"
-
-    print(
-        f"🔎 Trying fallback: {youtube_music_query}"
-    )
-
-    results = await wavelink.Playable.search(
-        youtube_music_query
-    )
-
-    if results:
+    if not results:
 
         print(
-            f"✅ YouTube Music found {len(results)} result(s)"
+            "❌ YouTube returned no results."
         )
 
-        return results[0]
+        return None
 
-    return None
+    print(
+        f"✅ Found {len(results)} result(s)"
+    )
+
+    return results[0]
 
 
 # ============================================================
@@ -350,7 +323,8 @@ async def get_player(ctx):
             except Exception as e:
 
                 print(
-                    f"⚠️ Move error: {type(e).__name__}: {e}"
+                    f"⚠️ Move error: "
+                    f"{type(e).__name__}: {e}"
                 )
 
         return player
@@ -394,8 +368,13 @@ async def get_player(ctx):
     except Exception as e:
 
         print()
+        print("========================================")
         print("❌ VOICE CONNECTION ERROR")
+        print("========================================")
+
         traceback.print_exc()
+
+        print("========================================")
         print()
 
         await ctx.send(
@@ -420,7 +399,6 @@ def cancel_idle(guild_id):
     )
 
     if task and not task.done():
-
         task.cancel()
 
     idle_tasks.pop(
@@ -570,7 +548,6 @@ async def play_next(player):
             traceback.print_exc()
 
             if player.queue:
-
                 await play_next(
                     player
                 )
@@ -949,7 +926,6 @@ async def on_wavelink_track_end(payload):
     )
 
     if str(reason).lower() == "replaced":
-
         return
 
     await play_next(
@@ -1013,7 +989,6 @@ async def on_wavelink_track_exception(payload):
                 )
 
             except discord.HTTPException:
-
                 pass
 
         await play_next(
@@ -1065,7 +1040,6 @@ async def on_voice_state_update(
             player.guild.id,
             False
         ):
-
             continue
 
         channel = player.channel
@@ -1091,7 +1065,6 @@ async def on_voice_state_update(
                 )
 
             except Exception:
-
                 pass
 
 
@@ -1100,15 +1073,9 @@ async def on_voice_state_update(
 # ============================================================
 
 @bot.command()
-async def play(
-    ctx,
-    *,
-    query: str
-):
+async def play(ctx, *, query: str):
 
-    player = await get_player(
-        ctx
-    )
+    player = await get_player(ctx)
 
     if not player:
         return
@@ -1124,25 +1091,36 @@ async def play(
         print(f"🔎 Searching: {query}")
         print("========================================")
 
-        # ====================================================
-        # YOUTUBE SEARCH
-        # ====================================================
+        # ----------------------------------------------------
+        # SEARCH
+        # ----------------------------------------------------
 
         track = await search_youtube(
             query
         )
+
+        # ----------------------------------------------------
+        # NO RESULTS
+        # ----------------------------------------------------
 
         if not track:
 
             await ctx.send(
                 embed=make_embed(
                     f"{ERROR} No Results",
-                    f"No YouTube results found for `{query}`.",
+                    (
+                        f"No YouTube results found for "
+                        f"`{query}`."
+                    ),
                     COLOR_ERROR
                 )
             )
 
             return
+
+        # ----------------------------------------------------
+        # TRACK FOUND
+        # ----------------------------------------------------
 
         print(
             f"🎵 Found: {track.title}"
@@ -1152,9 +1130,9 @@ async def play(
             f"🔗 URI: {getattr(track, 'uri', None)}"
         )
 
-        # ====================================================
-        # ALREADY PLAYING
-        # ====================================================
+        # ----------------------------------------------------
+        # QUEUE IF PLAYING
+        # ----------------------------------------------------
 
         if player.current:
 
@@ -1191,11 +1169,15 @@ async def play(
                 embed=e
             )
 
+            print(
+                f"➕ Queued: {track.title}"
+            )
+
             return
 
-        # ====================================================
+        # ----------------------------------------------------
         # PLAY
-        # ====================================================
+        # ----------------------------------------------------
 
         await player.play(
             track
@@ -1215,6 +1197,11 @@ async def play(
             f"▶️ Started: {track.title}"
         )
 
+        print(
+            "========================================"
+        )
+        print()
+
     except Exception as e:
 
         print()
@@ -1222,21 +1209,36 @@ async def play(
         print("❌ PLAY ERROR")
         print("========================================")
 
+        print(
+            f"Error type: {type(e).__name__}"
+        )
+
+        print(
+            f"Error: {e}"
+        )
+
         traceback.print_exc()
 
         print("========================================")
         print()
 
-        await ctx.send(
-            embed=make_embed(
-                f"{ERROR} Playback Error",
-                (
-                    "Something went wrong:\n"
-                    f"`{type(e).__name__}: {e}`"
-                ),
-                COLOR_ERROR
+        try:
+
+            await ctx.send(
+                embed=make_embed(
+                    f"{ERROR} Playback Error",
+                    (
+                        "Something went wrong while "
+                        "searching or playing the track.\n\n"
+                        f"**Error:** "
+                        f"`{type(e).__name__}: {e}`"
+                    ),
+                    COLOR_ERROR
+                )
             )
-        )
+
+        except discord.HTTPException:
+            pass
 
 
 # ============================================================
@@ -1248,18 +1250,15 @@ async def testsearch(ctx):
 
     try:
 
-        print(
-            f"🐍 discord.py: {discord.__version__}"
-        )
-
-        print(
-            f"🎵 Wavelink: {wavelink.__version__}"
-        )
-
         query = "ytsearch:tu"
 
+        print()
+        print("========================================")
+        print("🔎 YOUTUBE SEARCH TEST")
+        print("========================================")
+
         print(
-            f"🔎 Test search: {query}"
+            f"Query: {query}"
         )
 
         result = await wavelink.Playable.search(
@@ -1267,17 +1266,26 @@ async def testsearch(ctx):
         )
 
         print(
-            f"RESULT TYPE: {type(result)}"
+            f"Result type: {type(result).__name__}"
         )
 
         print(
-            f"RESULT: {result}"
+            f"Result count: "
+            f"{len(result) if result else 0}"
         )
 
         if not result:
 
+            print(
+                "❌ No results."
+            )
+
             await ctx.send(
-                "❌ YouTube search returned no results."
+                embed=make_embed(
+                    f"{ERROR} Search Failed",
+                    "YouTube search returned no results.",
+                    COLOR_ERROR
+                )
             )
 
             return
@@ -1292,21 +1300,40 @@ async def testsearch(ctx):
             f"🔗 URI: {getattr(track, 'uri', None)}"
         )
 
+        print(
+            "========================================"
+        )
+
         await ctx.send(
-            f"✅ YouTube search worked!\n"
-            f"**{track.title}**"
+            embed=make_embed(
+                f"{TICK} YouTube Search Works",
+                (
+                    f"**Track:** {track.title}\n"
+                    f"**URI:** `{getattr(track, 'uri', None)}`"
+                ),
+                COLOR_SUCCESS
+            )
         )
 
     except Exception as e:
 
         print()
+        print("========================================")
         print("❌ TEST SEARCH ERROR")
+        print("========================================")
+
         traceback.print_exc()
-        print()
+
+        print("========================================")
 
         await ctx.send(
-            f"❌ Search test failed:\n"
-            f"`{type(e).__name__}: {e}`"
+            embed=make_embed(
+                f"{ERROR} Search Test Failed",
+                (
+                    f"`{type(e).__name__}: {e}`"
+                ),
+                COLOR_ERROR
+            )
         )
 
 
@@ -1361,7 +1388,9 @@ async def join(ctx):
 
         print()
         print("❌ JOIN ERROR")
+
         traceback.print_exc()
+
         print()
 
         await ctx.send(
@@ -2082,7 +2111,6 @@ async def ping(ctx):
                 )
 
             except Exception:
-
                 pass
 
     await ctx.send(
@@ -2212,7 +2240,8 @@ async def help(ctx):
         value=(
             f"`{prefix_value}ping`\n"
             f"`{prefix_value}prefix <new>`\n"
-            f"`{prefix_value}user`"
+            f"`{prefix_value}user`\n"
+            f"`{prefix_value}testsearch`"
         ),
         inline=True
     )
@@ -2246,7 +2275,6 @@ async def on_command_error(
         error,
         commands.CommandNotFound
     ):
-
         return
 
     if isinstance(
@@ -2316,7 +2344,6 @@ async def on_command_error(
         )
 
     except discord.HTTPException:
-
         pass
 
 
