@@ -1,5 +1,6 @@
 import asyncio
 import os
+import traceback
 from typing import Optional
 
 import discord
@@ -25,28 +26,29 @@ LAVALINK_PORT = int(
     os.getenv("LAVALINK_PORT", "443")
 )
 
-LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD")
-
-
-if not TOKEN:
-    raise RuntimeError(
-        "DISCORD_TOKEN is missing from .env"
-    )
-
-if not LAVALINK_PASSWORD:
-    raise RuntimeError(
-        "LAVALINK_PASSWORD is missing from .env"
-    )
-
-
-# ============================================================
-# CONFIG
-# ============================================================
+LAVALINK_PASSWORD = os.getenv(
+    "LAVALINK_PASSWORD"
+)
 
 DEFAULT_PREFIX = "!"
 IDLE_TIMEOUT = 300
 
-# Per-guild settings
+
+if not TOKEN:
+    raise RuntimeError(
+        "DISCORD_TOKEN is missing from environment variables."
+    )
+
+if not LAVALINK_PASSWORD:
+    raise RuntimeError(
+        "LAVALINK_PASSWORD is missing from environment variables."
+    )
+
+
+# ============================================================
+# GUILD DATA
+# ============================================================
+
 guild_prefix = {}
 guild_loop = {}
 guild_247 = {}
@@ -64,7 +66,7 @@ intents.voice_states = True
 
 
 # ============================================================
-# BOT CLASS
+# BOT
 # ============================================================
 
 class Furious(commands.Bot):
@@ -76,13 +78,15 @@ class Furious(commands.Bot):
         print("🔌 Connecting to Lavalink...")
         print("========================================")
 
-        # Railway HTTPS endpoint
+        # Railway public HTTPS endpoint
         uri = f"https://{LAVALINK_HOST}:{LAVALINK_PORT}"
 
+        print(f"🌐 Lavalink URI: {uri}")
+
         node = wavelink.Node(
+            identifier="Furious-Lavalink",
             uri=uri,
-            password=LAVALINK_PASSWORD,
-            identifier="Furious-Lavalink"
+            password=LAVALINK_PASSWORD
         )
 
         try:
@@ -97,14 +101,26 @@ class Furious(commands.Bot):
         except Exception as e:
 
             print("❌ Lavalink connection failed.")
-            print(f"   {type(e).__name__}: {e}")
+            print(
+                f"{type(e).__name__}: {e}"
+            )
 
+            traceback.print_exc()
+
+
+# ============================================================
+# BOT INSTANCE
+# ============================================================
 
 bot = Furious(
-    command_prefix=lambda bot, message: guild_prefix.get(
-        message.guild.id,
-        DEFAULT_PREFIX
-    ) if message.guild else DEFAULT_PREFIX,
+    command_prefix=lambda bot, message: (
+        guild_prefix.get(
+            message.guild.id,
+            DEFAULT_PREFIX
+        )
+        if message.guild
+        else DEFAULT_PREFIX
+    ),
     intents=intents,
     help_command=None
 )
@@ -123,7 +139,7 @@ COLOR_PAUSE = discord.Color.gold()
 
 
 # ============================================================
-# CUSTOM EMOJIS
+# EMOJIS
 # ============================================================
 
 SPOTIFY = "<:214004pixelspotify:1537699774596386926>"
@@ -134,10 +150,10 @@ ERROR = "<a:880726error:1537700477955735622>"
 
 
 # ============================================================
-# EMBED HELPER
+# EMBED
 # ============================================================
 
-def embed(
+def make_embed(
     title: str,
     description: str = "",
     color: discord.Color = COLOR_MAIN
@@ -151,19 +167,30 @@ def embed(
 
 
 # ============================================================
-# TIME
+# TIME FORMAT
 # ============================================================
 
 def format_time(ms: Optional[int]) -> str:
 
-    if not ms:
+    if ms is None:
         return "00:00"
 
-    seconds = int(ms / 1000)
+    try:
+        ms = int(ms)
+    except (TypeError, ValueError):
+        return "00:00"
 
-    minutes, seconds = divmod(seconds, 60)
+    seconds = max(0, ms // 1000)
 
-    hours, minutes = divmod(minutes, 60)
+    minutes, seconds = divmod(
+        seconds,
+        60
+    )
+
+    hours, minutes = divmod(
+        minutes,
+        60
+    )
 
     if hours:
         return f"{hours:02}:{minutes:02}:{seconds:02}"
@@ -185,7 +212,7 @@ def artwork(track):
 
 
 # ============================================================
-# LOOP
+# LOOP NAME
 # ============================================================
 
 def loop_name(mode):
@@ -203,25 +230,49 @@ def loop_name(mode):
 
 
 # ============================================================
-# PLAYER
+# GET PLAYER
 # ============================================================
 
 async def get_player(ctx):
 
     player = ctx.guild.voice_client
 
-    # Already connected
+    # --------------------------------------------------------
+    # ALREADY CONNECTED
+    # --------------------------------------------------------
+
     if player:
 
         player.home = ctx.channel
 
+        # Move bot if user is in another channel
+        if (
+            ctx.author.voice
+            and player.channel != ctx.author.voice.channel
+        ):
+
+            try:
+
+                await player.move_to(
+                    ctx.author.voice.channel
+                )
+
+            except Exception as e:
+
+                print(
+                    f"⚠️ Move error: {type(e).__name__}: {e}"
+                )
+
         return player
 
-    # User must be in voice
+    # --------------------------------------------------------
+    # USER MUST BE IN VC
+    # --------------------------------------------------------
+
     if not ctx.author.voice:
 
         await ctx.send(
-            embed(
+            embed=make_embed(
                 f"{ERROR} Voice Channel Required",
                 "Join a voice channel first.",
                 COLOR_ERROR
@@ -232,6 +283,10 @@ async def get_player(ctx):
 
     channel = ctx.author.voice.channel
 
+    # --------------------------------------------------------
+    # CONNECT
+    # --------------------------------------------------------
+
     try:
 
         player = await channel.connect(
@@ -240,19 +295,23 @@ async def get_player(ctx):
 
         player.home = ctx.channel
 
+        print(
+            f"🔊 Connected to: {channel.name}"
+        )
+
         return player
 
     except Exception as e:
 
-        print(
-            f"❌ Voice connection error: "
-            f"{type(e).__name__}: {e}"
-        )
+        print()
+        print("❌ VOICE CONNECTION ERROR")
+        traceback.print_exc()
+        print()
 
         await ctx.send(
-            embed(
+            embed=make_embed(
                 f"{ERROR} Voice Connection Failed",
-                f"`{type(e).__name__}`",
+                f"`{type(e).__name__}: {e}`",
                 COLOR_ERROR
             )
         )
@@ -266,11 +325,18 @@ async def get_player(ctx):
 
 def cancel_idle(guild_id):
 
-    task = idle_tasks.get(guild_id)
+    task = idle_tasks.get(
+        guild_id
+    )
 
     if task and not task.done():
 
         task.cancel()
+
+    idle_tasks.pop(
+        guild_id,
+        None
+    )
 
 
 def schedule_idle(player):
@@ -280,16 +346,23 @@ def schedule_idle(player):
 
     guild_id = player.guild.id
 
-    if guild_247.get(guild_id, False):
+    if guild_247.get(
+        guild_id,
+        False
+    ):
         return
 
-    cancel_idle(guild_id)
+    cancel_idle(
+        guild_id
+    )
 
     async def disconnect_later():
 
         try:
 
-            await asyncio.sleep(IDLE_TIMEOUT)
+            await asyncio.sleep(
+                IDLE_TIMEOUT
+            )
 
         except asyncio.CancelledError:
 
@@ -300,11 +373,15 @@ def schedule_idle(player):
         if not current:
             return
 
-        if guild_247.get(guild_id, False):
+        if guild_247.get(
+            guild_id,
+            False
+        ):
             return
 
         if (
             not current.playing
+            and not current.current
             and not current.queue
         ):
 
@@ -318,6 +395,7 @@ def schedule_idle(player):
                 )
 
             except Exception:
+
                 pass
 
     idle_tasks[guild_id] = asyncio.create_task(
@@ -326,7 +404,7 @@ def schedule_idle(player):
 
 
 # ============================================================
-# QUEUE ADVANCEMENT
+# PLAY NEXT
 # ============================================================
 
 async def play_next(player):
@@ -343,9 +421,9 @@ async def play_next(player):
 
     current = player.current
 
-    # ----------------------------------------
+    # ========================================================
     # TRACK LOOP
-    # ----------------------------------------
+    # ========================================================
 
     if (
         mode == "track"
@@ -354,20 +432,20 @@ async def play_next(player):
 
         try:
 
-            await player.play(current)
+            await player.play(
+                current
+            )
 
             return
 
-        except Exception as e:
+        except Exception:
 
-            print(
-                f"❌ Track loop error: {e}"
-            )
+            traceback.print_exc()
 
 
-    # ----------------------------------------
+    # ========================================================
     # QUEUE LOOP
-    # ----------------------------------------
+    # ========================================================
 
     if (
         mode == "queue"
@@ -379,9 +457,9 @@ async def play_next(player):
         )
 
 
-    # ----------------------------------------
+    # ========================================================
     # NEXT TRACK
-    # ----------------------------------------
+    # ========================================================
 
     if player.queue:
 
@@ -395,18 +473,28 @@ async def play_next(player):
 
             return
 
-        except Exception as e:
+        except Exception:
 
-            print(
-                f"❌ Queue playback error: {e}"
-            )
+            print("❌ Failed to play next track.")
+            traceback.print_exc()
 
-            await play_next(player)
+            # Try another track
+            if player.queue:
+
+                await play_next(
+                    player
+                )
 
             return
 
-    # Nothing left
-    schedule_idle(player)
+
+    # ========================================================
+    # NOTHING LEFT
+    # ========================================================
+
+    schedule_idle(
+        player
+    )
 
 
 # ============================================================
@@ -455,7 +543,9 @@ def now_playing_embed(
         color=COLOR_MUSIC
     )
 
-    image = artwork(track)
+    image = artwork(
+        track
+    )
 
     if image:
 
@@ -474,9 +564,14 @@ def now_playing_embed(
 # MUSIC BUTTONS
 # ============================================================
 
-class MusicControls(discord.ui.View):
+class MusicControls(
+    discord.ui.View
+):
 
-    def __init__(self, guild_id):
+    def __init__(
+        self,
+        guild_id
+    ):
 
         super().__init__(
             timeout=None
@@ -503,8 +598,7 @@ class MusicControls(discord.ui.View):
 
         if (
             not interaction.user.voice
-            or
-            interaction.user.voice.channel != player.channel
+            or interaction.user.voice.channel != player.channel
         ):
 
             await interaction.response.send_message(
@@ -517,9 +611,9 @@ class MusicControls(discord.ui.View):
         return player
 
 
-    # --------------------------------------------------------
-    # PAUSE / RESUME
-    # --------------------------------------------------------
+    # ========================================================
+    # PAUSE
+    # ========================================================
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(
@@ -571,9 +665,9 @@ class MusicControls(discord.ui.View):
             )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # SKIP
-    # --------------------------------------------------------
+    # ========================================================
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(
@@ -612,9 +706,9 @@ class MusicControls(discord.ui.View):
         )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # STOP
-    # --------------------------------------------------------
+    # ========================================================
 
     @discord.ui.button(
         emoji="⏹️",
@@ -647,9 +741,9 @@ class MusicControls(discord.ui.View):
         )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # LOOP
-    # --------------------------------------------------------
+    # ========================================================
 
     @discord.ui.button(
         emoji="🔁",
@@ -682,8 +776,7 @@ class MusicControls(discord.ui.View):
         next_mode = modes[
             (
                 modes.index(current) + 1
-            )
-            % len(modes)
+            ) % len(modes)
         ]
 
         guild_loop[
@@ -697,7 +790,7 @@ class MusicControls(discord.ui.View):
 
 
 # ============================================================
-# EVENTS
+# READY
 # ============================================================
 
 @bot.event
@@ -707,9 +800,15 @@ async def on_ready():
     print("========================================")
     print(f"🤖 Logged in as {bot.user}")
     print(f"🌐 Servers: {len(bot.guilds)}")
+    print(f"🐍 discord.py: {discord.__version__}")
+    print(f"🎵 Wavelink: {wavelink.__version__}")
     print("========================================")
     print()
 
+
+# ============================================================
+# LAVALINK READY
+# ============================================================
 
 @bot.event
 async def on_wavelink_node_ready(payload):
@@ -719,6 +818,10 @@ async def on_wavelink_node_ready(payload):
         f"{payload.node.identifier}"
     )
 
+
+# ============================================================
+# TRACK START
+# ============================================================
 
 @bot.event
 async def on_wavelink_track_start(payload):
@@ -733,10 +836,13 @@ async def on_wavelink_track_start(payload):
     )
 
     print(
-        f"🎵 Playing: "
-        f"{payload.track.title}"
+        f"🎵 Playing: {payload.track.title}"
     )
 
+
+# ============================================================
+# TRACK END
+# ============================================================
 
 @bot.event
 async def on_wavelink_track_end(payload):
@@ -752,14 +858,24 @@ async def on_wavelink_track_end(payload):
         None
     )
 
-    # Don't advance when manually replaced
+    print(
+        f"🏁 Track ended: "
+        f"{payload.track.title} "
+        f"({reason})"
+    )
+
     if str(reason).lower() == "replaced":
+
         return
 
     await play_next(
         player
     )
 
+
+# ============================================================
+# TRACK EXCEPTION
+# ============================================================
 
 @bot.event
 async def on_wavelink_track_exception(payload):
@@ -768,15 +884,25 @@ async def on_wavelink_track_exception(payload):
     track = payload.track
 
     print()
-    print("❌ TRACK EXCEPTION")
+    print("========================================")
+    print("❌ LAVALINK TRACK EXCEPTION")
+    print("========================================")
+
+    if track:
+
+        print(
+            f"Track: {track.title}"
+        )
+
+        print(
+            f"URI: {getattr(track, 'uri', None)}"
+        )
+
     print(
-        f"Track: "
-        f"{track.title if track else 'Unknown'}"
+        f"Exception: {payload.exception}"
     )
-    print(
-        f"Exception: "
-        f"{payload.exception}"
-    )
+
+    print("========================================")
     print()
 
     if player:
@@ -792,7 +918,7 @@ async def on_wavelink_track_exception(payload):
             try:
 
                 await channel.send(
-                    embed=embed(
+                    embed=make_embed(
                         f"{ERROR} Track Error",
                         (
                             f"**{track.title if track else 'Track'}** "
@@ -803,12 +929,17 @@ async def on_wavelink_track_exception(payload):
                 )
 
             except discord.HTTPException:
+
                 pass
 
         await play_next(
             player
         )
 
+
+# ============================================================
+# TRACK STUCK
+# ============================================================
 
 @bot.event
 async def on_wavelink_track_stuck(payload):
@@ -850,6 +981,7 @@ async def on_voice_state_update(
             player.guild.id,
             False
         ):
+
             continue
 
         channel = player.channel
@@ -858,7 +990,8 @@ async def on_voice_state_update(
             continue
 
         humans = [
-            m for m in channel.members
+            m
+            for m in channel.members
             if not m.bot
         ]
 
@@ -868,7 +1001,13 @@ async def on_voice_state_update(
 
                 await player.disconnect()
 
+                print(
+                    f"👋 Empty VC, disconnected "
+                    f"from {player.guild.name}"
+                )
+
             except Exception:
+
                 pass
 
 
@@ -896,18 +1035,41 @@ async def play(
 
     try:
 
-        print(
-            f"🔎 Searching: {query}"
-        )
+        print()
+        print("========================================")
+        print(f"🔎 Searching: {query}")
+        print("========================================")
+
+        # ====================================================
+        # WAVELINK SEARCH
+        # ====================================================
 
         tracks = await wavelink.Playable.search(
             query
         )
 
+        print(
+            f"🔎 Search result type: {type(tracks)}"
+        )
+
+        # IMPORTANT:
+        #
+        # DO NOT DO THIS:
+        #
+        # isinstance(tracks, wavelink.Search)
+        #
+        # wavelink.Search is not a runtime type.
+        # That was causing:
+        #
+        # TypeError:
+        # isinstance() arg 2 must be a type...
+        #
+        # ====================================================
+
         if not tracks:
 
             await ctx.send(
-                embed=embed(
+                embed=make_embed(
                     f"{ERROR} No Results",
                     f"No results found for `{query}`.",
                     COLOR_ERROR
@@ -916,22 +1078,21 @@ async def play(
 
             return
 
-        # Wavelink can return a playlist
-        if isinstance(
-            tracks,
-            wavelink.Search
-        ):
+        # First result works for both
+        # search results and playlists.
+        track = tracks[0]
 
-            track = tracks[0]
+        print(
+            f"🎵 Found: {track.title}"
+        )
 
-        else:
+        print(
+            f"🔗 URI: {getattr(track, 'uri', None)}"
+        )
 
-            track = tracks[0]
-
-
-        # ----------------------------------------------------
+        # ====================================================
         # ALREADY PLAYING
-        # ----------------------------------------------------
+        # ====================================================
 
         if player.current:
 
@@ -943,7 +1104,7 @@ async def play(
                 player.queue
             )
 
-            e = embed(
+            e = make_embed(
                 "➕ Added to Queue",
                 (
                     f"## {track.title}\n\n"
@@ -970,10 +1131,9 @@ async def play(
 
             return
 
-
-        # ----------------------------------------------------
+        # ====================================================
         # PLAY
-        # ----------------------------------------------------
+        # ====================================================
 
         await player.play(
             track
@@ -996,21 +1156,97 @@ async def play(
     except Exception as e:
 
         print()
+        print("========================================")
         print("❌ PLAY ERROR")
-        print(
-            f"{type(e).__name__}: {e}"
-        )
+        print("========================================")
+
+        traceback.print_exc()
+
+        print("========================================")
         print()
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Playback Error",
                 (
-                    f"Something went wrong:\n"
+                    "Something went wrong:\n"
                     f"`{type(e).__name__}: {e}`"
                 ),
                 COLOR_ERROR
             )
+        )
+
+
+# ============================================================
+# TEST SEARCH
+# ============================================================
+
+@bot.command()
+async def testsearch(ctx):
+
+    try:
+
+        print(
+            f"🐍 discord.py: {discord.__version__}"
+        )
+
+        print(
+            f"🎵 Wavelink: {wavelink.__version__}"
+        )
+
+        query = (
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+
+        print(
+            f"🔎 Test search: {query}"
+        )
+
+        result = await wavelink.Playable.search(
+            query
+        )
+
+        print(
+            f"RESULT TYPE: {type(result)}"
+        )
+
+        print(
+            f"RESULT: {result}"
+        )
+
+        if not result:
+
+            await ctx.send(
+                "❌ Search returned no results."
+            )
+
+            return
+
+        track = result[0]
+
+        print(
+            f"🎵 Track: {track.title}"
+        )
+
+        print(
+            f"🔗 URI: {getattr(track, 'uri', None)}"
+        )
+
+        await ctx.send(
+            f"✅ Search worked!\n"
+            f"**{track.title}**"
+        )
+
+    except Exception as e:
+
+        print()
+        print("❌ TEST SEARCH ERROR")
+        traceback.print_exc()
+        print()
+
+        await ctx.send(
+            f"❌ Search test failed:\n"
+            f"`{type(e).__name__}: {e}`"
         )
 
 
@@ -1024,7 +1260,7 @@ async def join(ctx):
     if not ctx.author.voice:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Voice Required",
                 "Join a voice channel first.",
                 COLOR_ERROR
@@ -1054,7 +1290,7 @@ async def join(ctx):
         player.home = ctx.channel
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "🔊 Connected",
                 f"Joined **{channel.name}**.",
                 COLOR_SUCCESS
@@ -1063,14 +1299,15 @@ async def join(ctx):
 
     except Exception as e:
 
-        print(
-            f"❌ Join error: {e}"
-        )
+        print()
+        print("❌ JOIN ERROR")
+        traceback.print_exc()
+        print()
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Failed to Join",
-                f"`{type(e).__name__}`",
+                f"`{type(e).__name__}: {e}`",
                 COLOR_ERROR
             )
         )
@@ -1088,7 +1325,7 @@ async def skip(ctx):
     if not player or not player.current:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Nothing Playing",
                 "There is no track playing.",
                 COLOR_ERROR
@@ -1102,7 +1339,7 @@ async def skip(ctx):
         await player.skip()
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{SKIP} Skipped",
                 "The current track was skipped.",
                 COLOR_SUCCESS
@@ -1112,7 +1349,7 @@ async def skip(ctx):
     except Exception as e:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Skip Failed",
                 f"`{type(e).__name__}`",
                 COLOR_ERROR
@@ -1132,7 +1369,7 @@ async def pause(ctx):
     if not player or not player.current:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Nothing Playing",
                 "There is no track playing.",
                 COLOR_ERROR
@@ -1146,7 +1383,7 @@ async def pause(ctx):
     )
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             f"{PAUSE} Paused",
             f"Paused **{player.current.title}**.",
             COLOR_PAUSE
@@ -1166,7 +1403,7 @@ async def resume(ctx):
     if not player:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Not Connected",
                 "I'm not in a voice channel.",
                 COLOR_ERROR
@@ -1186,7 +1423,7 @@ async def resume(ctx):
     )
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "▶️ Resumed",
             f"Resumed **{title}**.",
             COLOR_SUCCESS
@@ -1206,7 +1443,7 @@ async def stop(ctx):
     if not player:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Not Connected",
                 "I'm not in a voice channel.",
                 COLOR_ERROR
@@ -1228,7 +1465,7 @@ async def stop(ctx):
     )
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "⏹️ Stopped",
             "Playback stopped and the queue was cleared.",
             COLOR_SUCCESS
@@ -1250,7 +1487,7 @@ async def queue_cmd(ctx):
     if not player:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "📭 Queue Empty",
                 "I'm not connected to a voice channel.",
                 COLOR_WARNING
@@ -1266,7 +1503,7 @@ async def queue_cmd(ctx):
     if not tracks:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "📭 Queue Empty",
                 "There are no upcoming tracks.",
                 COLOR_WARNING
@@ -1286,23 +1523,15 @@ async def queue_cmd(ctx):
             f"`{index}.` **{track.title}**"
         )
 
-    e = embed(
+    e = make_embed(
         f"{SPOTIFY} Furious Queue",
         "\n".join(lines),
         COLOR_MUSIC
     )
 
-    if len(tracks) > 10:
-
-        e.set_footer(
-            text=f"Showing 10 of {len(tracks)} tracks"
-        )
-
-    else:
-
-        e.set_footer(
-            text=f"{len(tracks)} track(s) queued"
-        )
+    e.set_footer(
+        text=f"{len(tracks)} track(s) queued"
+    )
 
     await ctx.send(
         embed=e
@@ -1321,7 +1550,7 @@ async def clear(ctx):
     if not player or not player.queue:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "📭 Queue Empty",
                 "There is nothing to clear.",
                 COLOR_WARNING
@@ -1333,7 +1562,7 @@ async def clear(ctx):
     player.queue.clear()
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "🧹 Queue Cleared",
             "All upcoming tracks were removed.",
             COLOR_SUCCESS
@@ -1356,7 +1585,7 @@ async def remove(
     if not player or not player.queue:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "📭 Queue Empty",
                 "There is nothing to remove.",
                 COLOR_WARNING
@@ -1372,7 +1601,7 @@ async def remove(
     if index < 1 or index > len(tracks):
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "⚠️ Invalid Position",
                 (
                     f"Choose a number from "
@@ -1397,7 +1626,7 @@ async def remove(
         )
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "🗑️ Removed",
             f"Removed **{removed.title}**.",
             COLOR_SUCCESS
@@ -1417,7 +1646,7 @@ async def shuffle(ctx):
     if not player or not player.queue:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "📭 Queue Empty",
                 "There is nothing to shuffle.",
                 COLOR_WARNING
@@ -1429,7 +1658,7 @@ async def shuffle(ctx):
     player.queue.shuffle()
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "🔀 Queue Shuffled",
             "The upcoming tracks were shuffled.",
             COLOR_SUCCESS
@@ -1454,7 +1683,7 @@ async def loop_cmd(
     if not player:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Not Connected",
                 "I'm not in a voice channel.",
                 COLOR_ERROR
@@ -1471,7 +1700,7 @@ async def loop_cmd(
         )
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "🔁 Loop Status",
                 f"Current mode: **{loop_name(current)}**",
                 COLOR_MAIN
@@ -1489,7 +1718,7 @@ async def loop_cmd(
     }:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "⚠️ Invalid Loop",
                 "Use `off`, `track`, or `queue`.",
                 COLOR_WARNING
@@ -1503,7 +1732,7 @@ async def loop_cmd(
     ] = mode
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "🔁 Loop Updated",
             f"Loop mode: **{loop_name(mode)}**",
             COLOR_SUCCESS
@@ -1523,7 +1752,7 @@ async def nowplaying(ctx):
     if not player or not player.current:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Nothing Playing",
                 "There is currently no music playing.",
                 COLOR_ERROR
@@ -1558,7 +1787,7 @@ async def volume(
     if not player:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Not Connected",
                 "I'm not in a voice channel.",
                 COLOR_ERROR
@@ -1570,7 +1799,7 @@ async def volume(
     if not 0 <= value <= 100:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "⚠️ Invalid Volume",
                 "Volume must be between `0` and `100`.",
                 COLOR_WARNING
@@ -1584,7 +1813,7 @@ async def volume(
     )
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "🔊 Volume Updated",
             f"Volume is now **{value}%**.",
             COLOR_SUCCESS
@@ -1604,7 +1833,7 @@ async def leave(ctx):
     if not player:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Not Connected",
                 "I'm not in a voice channel.",
                 COLOR_ERROR
@@ -1626,7 +1855,7 @@ async def leave(ctx):
     await player.disconnect()
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "👋 Disconnected",
             "Left the voice channel.",
             COLOR_SUCCESS
@@ -1662,6 +1891,8 @@ async def mode_247(ctx):
             guild_id
         )
 
+        title = "♾️ 24/7 Enabled"
+
         message = (
             "I'll stay in the voice channel "
             "even while idle."
@@ -1669,9 +1900,9 @@ async def mode_247(ctx):
 
         color = COLOR_SUCCESS
 
-        title = "♾️ 24/7 Enabled"
-
     else:
+
+        title = "♾️ 24/7 Disabled"
 
         message = (
             "24/7 mode is disabled. "
@@ -1679,8 +1910,6 @@ async def mode_247(ctx):
         )
 
         color = COLOR_WARNING
-
-        title = "♾️ 24/7 Disabled"
 
         player = ctx.guild.voice_client
 
@@ -1695,7 +1924,7 @@ async def mode_247(ctx):
             )
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             title,
             message,
             color
@@ -1724,7 +1953,7 @@ async def prefix(
     if new_prefix is None:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "⚙️ Prefix",
                 f"Current prefix: `{current}`",
                 COLOR_MAIN
@@ -1736,7 +1965,7 @@ async def prefix(
     if len(new_prefix) > 5:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "⚠️ Invalid Prefix",
                 "Prefix must be 5 characters or fewer.",
                 COLOR_WARNING
@@ -1750,7 +1979,7 @@ async def prefix(
     ] = new_prefix
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             f"{TICK} Prefix Updated",
             f"My new prefix is `{new_prefix}`.",
             COLOR_SUCCESS
@@ -1785,13 +2014,19 @@ async def ping(ctx):
 
         if heartbeat is not None:
 
-            description += (
-                f"\n🎧 **Lavalink:** "
-                f"`{round(heartbeat)}ms`"
-            )
+            try:
+
+                description += (
+                    f"\n🎧 **Lavalink:** "
+                    f"`{round(heartbeat)}ms`"
+                )
+
+            except Exception:
+
+                pass
 
     await ctx.send(
-        embed=embed(
+        embed=make_embed(
             "🏓 Pong!",
             description,
             COLOR_MAIN
@@ -1825,7 +2060,7 @@ async def bot_stats(ctx):
         bot.voice_clients
     )
 
-    e = embed(
+    e = make_embed(
         "📊 Furious Stats",
         (
             f"🌐 **Servers:** `{servers}`\n"
@@ -1951,6 +2186,7 @@ async def on_command_error(
         error,
         commands.CommandNotFound
     ):
+
         return
 
     if isinstance(
@@ -1959,7 +2195,7 @@ async def on_command_error(
     ):
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "⚠️ Missing Argument",
                 f"Missing `{error.param.name}`.",
                 COLOR_WARNING
@@ -1974,7 +2210,7 @@ async def on_command_error(
     ):
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 "⚠️ Invalid Argument",
                 "Check the command arguments.",
                 COLOR_WARNING
@@ -1989,7 +2225,7 @@ async def on_command_error(
     ):
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Missing Permissions",
                 "You don't have permission to use this command.",
                 COLOR_ERROR
@@ -1998,15 +2234,19 @@ async def on_command_error(
 
         return
 
-    print(
-        f"❌ Command error: "
-        f"{type(error).__name__}: {error}"
+    print()
+    print("❌ COMMAND ERROR")
+    traceback.print_exception(
+        type(error),
+        error,
+        error.__traceback__
     )
+    print()
 
     try:
 
         await ctx.send(
-            embed=embed(
+            embed=make_embed(
                 f"{ERROR} Unexpected Error",
                 f"`{type(error).__name__}`",
                 COLOR_ERROR
@@ -2014,29 +2254,10 @@ async def on_command_error(
         )
 
     except discord.HTTPException:
+
         pass
 
 
-@bot.command()
-async def testsearch(ctx):
-    try:
-        print("Wavelink version:", wavelink.__version__)
-        print("Discord version:", discord.__version__)
-
-        result = await wavelink.Playable.search(
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-        )
-
-        print("RESULT TYPE:", type(result))
-        print("RESULT:", result)
-
-        await ctx.send(f"✅ Search worked: `{type(result).__name__}`")
-
-    except Exception:
-        import traceback
-        traceback.print_exc()
-
-        await ctx.send("❌ Search test failed. Check Railway logs.")
 # ============================================================
 # START
 # ============================================================
