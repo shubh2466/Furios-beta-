@@ -78,7 +78,7 @@ class Furious(commands.Bot):
         print("🔌 Connecting to Lavalink...")
         print("========================================")
 
-        # Railway public HTTPS endpoint
+        # Railway HTTPS endpoint
         uri = f"https://{LAVALINK_HOST}:{LAVALINK_PORT}"
 
         print(f"🌐 Lavalink URI: {uri}")
@@ -230,6 +230,97 @@ def loop_name(mode):
 
 
 # ============================================================
+# SEARCH
+# ============================================================
+
+async def search_youtube(query: str):
+
+    """
+    Search YouTube first.
+
+    Direct URLs are passed directly to Lavalink.
+    Normal searches use ytsearch:.
+    """
+
+    query = query.strip()
+
+    if not query:
+        return None
+
+    # --------------------------------------------------------
+    # DIRECT URL / VIDEO
+    # --------------------------------------------------------
+
+    if (
+        query.startswith("https://")
+        or query.startswith("http://")
+    ):
+
+        print(
+            f"🔗 Direct URL: {query}"
+        )
+
+        results = await wavelink.Playable.search(
+            query
+        )
+
+        if results:
+            return results[0]
+
+        return None
+
+    # --------------------------------------------------------
+    # YOUTUBE SEARCH
+    # --------------------------------------------------------
+
+    youtube_query = f"ytsearch:{query}"
+
+    print(
+        f"🔎 YouTube search: {youtube_query}"
+    )
+
+    results = await wavelink.Playable.search(
+        youtube_query
+    )
+
+    if results:
+
+        print(
+            f"✅ YouTube found {len(results)} result(s)"
+        )
+
+        return results[0]
+
+    # --------------------------------------------------------
+    # FALLBACK: YOUTUBE MUSIC
+    # --------------------------------------------------------
+
+    print(
+        "⚠️ ytsearch returned no results."
+    )
+
+    youtube_music_query = f"ytmsearch:{query}"
+
+    print(
+        f"🔎 Trying fallback: {youtube_music_query}"
+    )
+
+    results = await wavelink.Playable.search(
+        youtube_music_query
+    )
+
+    if results:
+
+        print(
+            f"✅ YouTube Music found {len(results)} result(s)"
+        )
+
+        return results[0]
+
+    return None
+
+
+# ============================================================
 # GET PLAYER
 # ============================================================
 
@@ -245,7 +336,6 @@ async def get_player(ctx):
 
         player.home = ctx.channel
 
-        # Move bot if user is in another channel
         if (
             ctx.author.voice
             and player.channel != ctx.author.voice.channel
@@ -421,9 +511,9 @@ async def play_next(player):
 
     current = player.current
 
-    # ========================================================
+    # --------------------------------------------------------
     # TRACK LOOP
-    # ========================================================
+    # --------------------------------------------------------
 
     if (
         mode == "track"
@@ -442,10 +532,9 @@ async def play_next(player):
 
             traceback.print_exc()
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # QUEUE LOOP
-    # ========================================================
+    # --------------------------------------------------------
 
     if (
         mode == "queue"
@@ -456,10 +545,9 @@ async def play_next(player):
             current
         )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # NEXT TRACK
-    # ========================================================
+    # --------------------------------------------------------
 
     if player.queue:
 
@@ -475,10 +563,12 @@ async def play_next(player):
 
         except Exception:
 
-            print("❌ Failed to play next track.")
+            print(
+                "❌ Failed to play next track."
+            )
+
             traceback.print_exc()
 
-            # Try another track
             if player.queue:
 
                 await play_next(
@@ -487,10 +577,9 @@ async def play_next(player):
 
             return
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # NOTHING LEFT
-    # ========================================================
+    # --------------------------------------------------------
 
     schedule_idle(
         player
@@ -579,7 +668,6 @@ class MusicControls(
 
         self.guild_id = guild_id
 
-
     async def get_player(
         self,
         interaction
@@ -610,10 +698,9 @@ class MusicControls(
 
         return player
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # PAUSE
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(
@@ -664,10 +751,9 @@ class MusicControls(
                 ephemeral=True
             )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # SKIP
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(
@@ -705,10 +791,9 @@ class MusicControls(
             ephemeral=True
         )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # STOP
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji="⏹️",
@@ -740,10 +825,9 @@ class MusicControls(
             ephemeral=True
         )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # LOOP
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji="🔁",
@@ -1041,46 +1125,24 @@ async def play(
         print("========================================")
 
         # ====================================================
-        # WAVELINK SEARCH
+        # YOUTUBE SEARCH
         # ====================================================
 
-        tracks = await wavelink.Playable.search(
+        track = await search_youtube(
             query
         )
 
-        print(
-            f"🔎 Search result type: {type(tracks)}"
-        )
-
-        # IMPORTANT:
-        #
-        # DO NOT DO THIS:
-        #
-        # isinstance(tracks, wavelink.Search)
-        #
-        # wavelink.Search is not a runtime type.
-        # That was causing:
-        #
-        # TypeError:
-        # isinstance() arg 2 must be a type...
-        #
-        # ====================================================
-
-        if not tracks:
+        if not track:
 
             await ctx.send(
                 embed=make_embed(
                     f"{ERROR} No Results",
-                    f"No results found for `{query}`.",
+                    f"No YouTube results found for `{query}`.",
                     COLOR_ERROR
                 )
             )
 
             return
-
-        # First result works for both
-        # search results and playlists.
-        track = tracks[0]
 
         print(
             f"🎵 Found: {track.title}"
@@ -1194,9 +1256,7 @@ async def testsearch(ctx):
             f"🎵 Wavelink: {wavelink.__version__}"
         )
 
-        query = (
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-        )
+        query = "ytsearch:tu"
 
         print(
             f"🔎 Test search: {query}"
@@ -1217,7 +1277,7 @@ async def testsearch(ctx):
         if not result:
 
             await ctx.send(
-                "❌ Search returned no results."
+                "❌ YouTube search returned no results."
             )
 
             return
@@ -1233,7 +1293,7 @@ async def testsearch(ctx):
         )
 
         await ctx.send(
-            f"✅ Search worked!\n"
+            f"✅ YouTube search worked!\n"
             f"**{track.title}**"
         )
 
@@ -2236,11 +2296,13 @@ async def on_command_error(
 
     print()
     print("❌ COMMAND ERROR")
+
     traceback.print_exception(
         type(error),
         error,
         error.__traceback__
     )
+
     print()
 
     try:
