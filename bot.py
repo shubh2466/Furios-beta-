@@ -2017,6 +2017,26 @@ async def on_command_error(
         pass
 
 
+@bot.command()
+async def testsearch(ctx):
+    try:
+        print("Wavelink version:", wavelink.__version__)
+        print("Discord version:", discord.__version__)
+
+        result = await wavelink.Playable.search(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+
+        print("RESULT TYPE:", type(result))
+        print("RESULT:", result)
+
+        await ctx.send(f"✅ Search worked: `{type(result).__name__}`")
+
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+        await ctx.send("❌ Search test failed. Check Railway logs.")
 # ============================================================
 # START
 # ============================================================
