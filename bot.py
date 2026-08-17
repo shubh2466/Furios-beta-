@@ -7,6 +7,32 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 
+
+@bot.event
+async def on_wavelink_track_start(payload):
+    print(
+        f"🎵 TRACK STARTED: "
+        f"{payload.track.title}"
+    )
+
+
+@bot.event
+async def on_wavelink_track_exception(payload):
+    print(
+        f"❌ TRACK EXCEPTION: "
+        f"{payload.track.title if payload.track else 'Unknown'}"
+    )
+    print(f"Error: {payload.exception}")
+
+
+@bot.event
+async def on_wavelink_track_stuck(payload):
+    print(
+        f"⚠️ TRACK STUCK: "
+        f"{payload.track.title if payload.track else 'Unknown'}"
+    )
+    print(f"Threshold: {payload.threshold}ms")
+
 # ==========================================
 # LOAD ENVIRONMENT
 # ==========================================
