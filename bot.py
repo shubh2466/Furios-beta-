@@ -7,32 +7,6 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 
-
-@bot.event
-async def on_wavelink_track_start(payload):
-    print(
-        f"🎵 TRACK STARTED: "
-        f"{payload.track.title}"
-    )
-
-
-@bot.event
-async def on_wavelink_track_exception(payload):
-    print(
-        f"❌ TRACK EXCEPTION: "
-        f"{payload.track.title if payload.track else 'Unknown'}"
-    )
-    print(f"Error: {payload.exception}")
-
-
-@bot.event
-async def on_wavelink_track_stuck(payload):
-    print(
-        f"⚠️ TRACK STUCK: "
-        f"{payload.track.title if payload.track else 'Unknown'}"
-    )
-    print(f"Threshold: {payload.threshold}ms")
-
 # ==========================================
 # LOAD ENVIRONMENT
 # ==========================================
@@ -125,6 +99,9 @@ def resolve_prefix(bot_, message):
     return DEFAULT_PREFIX
 
 
+# NOTE: `bot` must exist before any `@bot.event` decorator runs, so the bot
+# instance is created immediately after the class/state definitions and
+# BEFORE any event handlers below reference it.
 bot = Furious(
     command_prefix=resolve_prefix,
     intents=intents,
@@ -383,63 +360,8 @@ class MusicControlView(discord.ui.View):
 
 
 # ==========================================
-# EVENTS
+# IDLE DISCONNECT HELPERS
 # ==========================================
-
-@bot.event
-async def on_ready():
-
-    print()
-    print("================================")
-    print(f"🤖 Furious is online as {bot.user}")
-    print(f"🌐 Servers: {len(bot.guilds)}")
-    print("================================")
-    print()
-
-
-@bot.event
-async def on_wavelink_node_ready(payload):
-
-    print(
-        f"<:763305tick:1537700918722691133> Lavalink connected: "
-        f"{payload.node.identifier}"
-    )
-
-
-@bot.event
-async def on_wavelink_track_end(payload):
-
-    player = payload.player
-
-    if not player or not player.guild:
-        return
-
-    # Avoid double-handling when a track is replaced manually (e.g. !skip
-    # calling player.play() directly elsewhere, or !stop).
-    if getattr(payload, "reason", None) == "replaced":
-        return
-
-    guild_id = player.guild.id
-    mode = guild_loop_mode.get(guild_id, "off")
-    finished_track = getattr(payload, "track", None)
-
-    # Track loop: replay the same track.
-    if mode == "track" and finished_track:
-        await player.play(finished_track)
-        return
-
-    # Queue loop: put the finished track back at the end before advancing.
-    if mode == "queue" and finished_track:
-        player.queue.put(finished_track)
-
-    if player.queue:
-        next_track = player.queue.get()
-        await player.play(next_track)
-        return
-
-    # Nothing left to play — start an idle timer instead of leaving instantly.
-    schedule_idle_disconnect(player)
-
 
 def schedule_idle_disconnect(player):
     guild_id = player.guild.id
@@ -471,6 +393,157 @@ def cancel_idle_disconnect(guild_id):
     task = idle_disconnect_tasks.get(guild_id)
     if task and not task.done():
         task.cancel()
+
+
+async def advance_queue(player):
+    """
+    Shared "what plays next" logic, respecting loop mode.
+    Used by on_wavelink_track_end AND by the exception/stuck handlers so a
+    broken track doesn't just kill playback for the rest of the queue.
+    Returns the track that was started, or None if nothing was left to play.
+    """
+
+    if not player or not player.guild:
+        return None
+
+    guild_id = player.guild.id
+    mode = guild_loop_mode.get(guild_id, "off")
+    finished_track = player.current
+
+    if mode == "track" and finished_track:
+        await player.play(finished_track)
+        return finished_track
+
+    if mode == "queue" and finished_track:
+        player.queue.put(finished_track)
+
+    if player.queue:
+        next_track = player.queue.get()
+        await player.play(next_track)
+        return next_track
+
+    schedule_idle_disconnect(player)
+    return None
+
+
+async def notify_player_channel(player, embed):
+    """Send an embed to whatever text channel the player is 'homed' to."""
+    channel = getattr(player, "home", None)
+    if channel:
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
+
+# ==========================================
+# EVENTS
+# ==========================================
+
+@bot.event
+async def on_ready():
+
+    print()
+    print("================================")
+    print(f"🤖 Furious is online as {bot.user}")
+    print(f"🌐 Servers: {len(bot.guilds)}")
+    print("================================")
+    print()
+
+
+@bot.event
+async def on_wavelink_node_ready(payload):
+
+    print(
+        f"<:763305tick:1537700918722691133> Lavalink connected: "
+        f"{payload.node.identifier}"
+    )
+
+
+@bot.event
+async def on_wavelink_track_start(payload):
+
+    player = payload.player
+
+    print(
+        f"🎵 TRACK STARTED: "
+        f"{payload.track.title}"
+    )
+
+    if not player or not player.guild:
+        return
+
+    # A track just started, so any pending "nothing to do, disconnect soon"
+    # timer from a previous idle period is no longer valid.
+    cancel_idle_disconnect(player.guild.id)
+
+
+@bot.event
+async def on_wavelink_track_end(payload):
+
+    player = payload.player
+
+    if not player or not player.guild:
+        return
+
+    # Avoid double-handling when a track is replaced manually (e.g. !skip
+    # calling player.play() directly elsewhere, or !stop).
+    if getattr(payload, "reason", None) == "replaced":
+        return
+
+    await advance_queue(player)
+
+
+@bot.event
+async def on_wavelink_track_exception(payload):
+
+    player = payload.player
+    track = payload.track
+
+    print(
+        f"❌ TRACK EXCEPTION: "
+        f"{track.title if track else 'Unknown'}"
+    )
+    print(f"Error: {payload.exception}")
+
+    if not player or not player.guild:
+        return
+
+    embed = basic_embed(
+        "<a:880726error:1537700477955735622> Track Error",
+        f"**{track.title if track else 'A track'}** failed to play and was skipped.\n"
+        f"`{payload.exception}`",
+        COLOR_ERROR
+    )
+    await notify_player_channel(player, embed)
+
+    # Don't leave playback stuck on a dead track — move on to the next one.
+    await advance_queue(player)
+
+
+@bot.event
+async def on_wavelink_track_stuck(payload):
+
+    player = payload.player
+    track = payload.track
+
+    print(
+        f"⚠️ TRACK STUCK: "
+        f"{track.title if track else 'Unknown'}"
+    )
+    print(f"Threshold: {payload.threshold}ms")
+
+    if not player or not player.guild:
+        return
+
+    embed = basic_embed(
+        "⚠️ Track Stuck",
+        f"**{track.title if track else 'A track'}** got stuck and was skipped.",
+        COLOR_WARNING
+    )
+    await notify_player_channel(player, embed)
+
+    await advance_queue(player)
 
 
 @bot.event
@@ -530,6 +603,7 @@ async def get_player(ctx):
     player = ctx.guild.voice_client
 
     if player:
+        player.home = ctx.channel
         return player
 
     if not ctx.author.voice:
@@ -549,6 +623,9 @@ async def get_player(ctx):
         player = await ctx.author.voice.channel.connect(
             cls=wavelink.Player
         )
+
+        # Remember which text channel to post track/error updates to.
+        player.home = ctx.channel
 
         return player
 
@@ -602,6 +679,8 @@ async def join(ctx):
 
             await player.move_to(channel)
 
+        player.home = ctx.channel
+
         embed = basic_embed(
             "🔊 Connected",
             f"Successfully joined **{channel.name}**.",
@@ -639,6 +718,7 @@ async def play(ctx, *, query: str):
     if not player:
         return
 
+    player.home = ctx.channel
     cancel_idle_disconnect(ctx.guild.id)
 
     try:
@@ -1543,6 +1623,6 @@ async def help(ctx):
 # START
 # ==========================================
 
-print("🚀 Starting Furious...")
-
-bot.run(TOKEN)
+if __name__ == "__main__":
+    print("🚀 Starting Furious...")
+    bot.run(TOKEN)
