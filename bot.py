@@ -30,6 +30,7 @@ DEFAULT_PREFIX = "!"
 IDLE_TIMEOUT = 300
 DATA_FILE = "guild_data.json"
 
+
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing.")
 
@@ -38,31 +39,14 @@ if not LAVALINK_PASSWORD:
 
 
 # ============================================================
-# PERSISTENT DATA
+# SAVED GUILD DATA
 # ============================================================
 
-guild_prefix: dict[int, str] = {}
-guild_loop: dict[int, str] = {}
-guild_247: dict[int, bool] = {}
-
-idle_tasks: dict[int, asyncio.Task] = {}
-
-# One tracked player per guild.
-players: dict[int, wavelink.Player] = {}
-
-# Prevent two !play commands from modifying the same player
-# simultaneously.
-player_locks: dict[int, asyncio.Lock] = {}
-
-
-def get_lock(guild_id: int) -> asyncio.Lock:
-    lock = player_locks.get(guild_id)
-
-    if lock is None:
-        lock = asyncio.Lock()
-        player_locks[guild_id] = lock
-
-    return lock
+guild_prefix = {}
+guild_loop = {}
+guild_247 = {}
+idle_tasks = {}
+voice_locks = {}
 
 
 def load_data():
@@ -70,28 +54,19 @@ def load_data():
         return
 
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
         guild_prefix.update(
-            {
-                int(guild_id): prefix
-                for guild_id, prefix in data.get("prefix", {}).items()
-            }
+            {int(k): v for k, v in data.get("prefix", {}).items()}
         )
 
         guild_loop.update(
-            {
-                int(guild_id): mode
-                for guild_id, mode in data.get("loop", {}).items()
-            }
+            {int(k): v for k, v in data.get("loop", {}).items()}
         )
 
         guild_247.update(
-            {
-                int(guild_id): enabled
-                for guild_id, enabled in data.get("247", {}).items()
-            }
+            {int(k): v for k, v in data.get("247", {}).items()}
         )
 
         print("💾 Guild settings loaded.")
@@ -103,24 +78,24 @@ def load_data():
 
 def save_data():
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as file:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "prefix": {
-                        str(guild_id): prefix
-                        for guild_id, prefix in guild_prefix.items()
+                        str(k): v
+                        for k, v in guild_prefix.items()
                     },
                     "loop": {
-                        str(guild_id): mode
-                        for guild_id, mode in guild_loop.items()
+                        str(k): v
+                        for k, v in guild_loop.items()
                     },
                     "247": {
-                        str(guild_id): enabled
-                        for guild_id, enabled in guild_247.items()
+                        str(k): v
+                        for k, v in guild_247.items()
                     },
                 },
-                file,
-                indent=4,
+                f,
+                indent=4
             )
 
     except Exception:
@@ -136,9 +111,59 @@ load_data()
 # ============================================================
 
 intents = discord.Intents.default()
-
 intents.message_content = True
 intents.voice_states = True
+
+
+# ============================================================
+# BOT
+# ============================================================
+
+class Furious(commands.Bot):
+
+    async def setup_hook(self):
+
+        print()
+        print("========================================")
+        print("🔌 Connecting to Lavalink...")
+        print("========================================")
+
+        uri = f"https://{LAVALINK_HOST}:{LAVALINK_PORT}"
+
+        node = wavelink.Node(
+            identifier="Furious-Lavalink",
+            uri=uri,
+            password=LAVALINK_PASSWORD
+        )
+
+        try:
+            await wavelink.Pool.connect(
+                nodes=[node],
+                client=self
+            )
+
+            print("✅ Lavalink connection established.")
+
+        except Exception as e:
+            print("❌ Lavalink connection failed.")
+            print(f"{type(e).__name__}: {e}")
+            traceback.print_exc()
+
+        self.add_view(MusicControls())
+
+
+bot = Furious(
+    command_prefix=lambda bot, message: (
+        guild_prefix.get(
+            message.guild.id,
+            DEFAULT_PREFIX
+        )
+        if message.guild
+        else DEFAULT_PREFIX
+    ),
+    intents=intents,
+    help_command=None
+)
 
 
 # ============================================================
@@ -165,19 +190,18 @@ ERROR = "<a:880726error:1537700477955735622>"
 
 
 # ============================================================
-# EMBEDS
+# EMBED
 # ============================================================
 
 def make_embed(
     title: str,
     description: str = "",
-    color: discord.Color = COLOR_MAIN,
-) -> discord.Embed:
-
+    color: discord.Color = COLOR_MAIN
+):
     return discord.Embed(
         title=title,
         description=description,
-        color=color,
+        color=color
     )
 
 
@@ -207,91 +231,28 @@ def format_time(ms: Optional[int]) -> str:
 
 
 # ============================================================
-# LOOP
+# TRACK HELPERS
 # ============================================================
 
-def loop_name(mode: str) -> str:
-
-    return {
-        "off": "Off",
-        "track": "🔂 Track",
-        "queue": "🔁 Queue",
-    }.get(mode, "Off")
-
-
-# ============================================================
-# ARTWORK
-# ============================================================
-
-def get_artwork(track):
+def artwork(track):
 
     return getattr(track, "artwork", None)
 
 
-# ============================================================
-# BOT
-# ============================================================
+def loop_name(mode):
 
-class Furious(commands.Bot):
-
-    async def setup_hook(self):
-
-        print()
-        print("========================================")
-        print("🔌 Connecting to Lavalink...")
-        print("========================================")
-
-        uri = f"https://{LAVALINK_HOST}:{LAVALINK_PORT}"
-
-        print(f"🌐 Lavalink URI: {uri}")
-
-        node = wavelink.Node(
-            identifier="Furious-Lavalink",
-            uri=uri,
-            password=LAVALINK_PASSWORD,
-        )
-
-        try:
-
-            await wavelink.Pool.connect(
-                nodes=[node],
-                client=self,
-            )
-
-            print("✅ Lavalink connection established.")
-
-        except Exception as error:
-
-            print("❌ Lavalink connection failed.")
-            print(f"{type(error).__name__}: {error}")
-
-            traceback.print_exc()
-
-            raise
-
-        # Persistent buttons.
-        self.add_view(MusicControls())
-
-
-bot = Furious(
-    command_prefix=lambda _bot, message: (
-        guild_prefix.get(
-            message.guild.id,
-            DEFAULT_PREFIX,
-        )
-        if message.guild
-        else DEFAULT_PREFIX
-    ),
-    intents=intents,
-    help_command=None,
-)
+    return {
+        "off": "Off",
+        "track": "🔂 Track",
+        "queue": "🔁 Queue"
+    }.get(mode, "Off")
 
 
 # ============================================================
-# YOUTUBE SEARCH
+# YOUTUBE SEARCH / URL LOADING
 # ============================================================
 
-async def search_track(query: str):
+async def search_youtube(query: str):
 
     query = query.strip()
 
@@ -304,27 +265,26 @@ async def search_track(query: str):
 
     if query.startswith(("http://", "https://")):
 
-        print()
-        print("🔗 Direct URL")
+        print(f"🔗 Loading URL directly:")
         print(query)
 
         try:
-
             results = await wavelink.Playable.search(query)
 
-        except Exception as error:
+        except Exception as e:
 
-            print("❌ Direct URL search failed.")
-            print(f"{type(error).__name__}: {error}")
+            print("❌ Direct URL loading failed.")
+            print(f"{type(e).__name__}: {e}")
 
             traceback.print_exc()
 
             return None
 
         if not results:
+            print("❌ Lavalink returned no result for URL.")
             return None
 
-        # Playlist result.
+        # Playlist
         if isinstance(results, wavelink.Playlist):
 
             if not results.tracks:
@@ -332,27 +292,26 @@ async def search_track(query: str):
 
             return results.tracks[0]
 
+        # Normal track result
         return results[0]
 
     # --------------------------------------------------------
     # YOUTUBE SEARCH
     # --------------------------------------------------------
 
-    print()
-    print("🔎 YouTube search")
-    print(query)
+    print(f"🔎 YouTube search: {query}")
 
     try:
 
         results = await wavelink.Playable.search(
             query,
-            source=wavelink.TrackSource.YouTube,
+            source=wavelink.TrackSource.YouTube
         )
 
-    except Exception as error:
+    except Exception as e:
 
         print("❌ YouTube search failed.")
-        print(f"{type(error).__name__}: {error}")
+        print(f"{type(e).__name__}: {e}")
 
         traceback.print_exc()
 
@@ -370,191 +329,244 @@ async def search_track(query: str):
 
 
 # ============================================================
-# PLAYER VALIDATION
+# PLAYER / VOICE CONNECTION
 # ============================================================
 
-def is_valid_player(
-    player: Optional[wavelink.Player],
-    guild: discord.Guild,
-) -> bool:
+def get_voice_lock(guild_id: int) -> asyncio.Lock:
+    lock = voice_locks.get(guild_id)
 
-    if player is None:
-        return False
+    if lock is None:
+        lock = asyncio.Lock()
+        voice_locks[guild_id] = lock
 
-    if player.guild is None:
-        return False
-
-    if player.guild.id != guild.id:
-        return False
-
-    # Discord-side voice connection.
-    try:
-
-        if not player.is_connected():
-            return False
-
-    except Exception:
-
-        return False
-
-    # Make sure this is still the guild's active voice client.
-    current_voice = guild.voice_client
-
-    if current_voice is not player:
-        return False
-
-    return True
+    return lock
 
 
-# ============================================================
-# REMOVE PLAYER
-# ============================================================
-
-async def remove_player(
-    guild_id: int,
-    disconnect: bool = True,
-):
-
-    player = players.pop(guild_id, None)
-
-    cancel_idle(guild_id)
+async def disconnect_stale_player(guild):
+    """Remove a voice client that exists locally but is no longer connected."""
+    player = guild.voice_client
 
     if not player:
         return
 
-    if disconnect:
+    try:
+        connected = player.is_connected()
+    except Exception:
+        connected = True
 
+    if connected:
+        return
+
+    print(f"⚠️ Removing stale player for guild {guild.id}")
+
+    try:
+        await player.disconnect(force=True)
+    except Exception:
         try:
-
             await player.disconnect()
-
         except Exception:
-
             pass
 
+    await asyncio.sleep(0.5)
 
-# ============================================================
-# CONNECT / GET PLAYER
-# ============================================================
+
+async def connect_voice(channel, timeout: float = 60.0):
+    """
+    Connect a fresh Wavelink player to Discord voice.
+
+    The larger timeout is intentional: Discord voice negotiation can take
+    longer than Wavelink's default 30 seconds on some hosts.
+    """
+    print(f"🔊 Connecting to voice channel: {channel.name}")
+
+    player = await channel.connect(
+        cls=wavelink.Player,
+        timeout=timeout,
+        reconnect=True,
+        self_deaf=True,
+        self_mute=False,
+    )
+
+    # Give discord.py a moment to finish registering the voice client.
+    await asyncio.sleep(0.25)
+
+    return player
+
 
 async def get_player(ctx):
-
-    guild = ctx.guild
-
-    if guild is None:
+    if not ctx.guild:
         return None
 
-    # --------------------------------------------------------
-    # USER MUST BE IN VC
-    # --------------------------------------------------------
-
     if not ctx.author.voice or not ctx.author.voice.channel:
-
         await ctx.send(
             embed=make_embed(
                 f"{ERROR} Voice Channel Required",
                 "Join a voice channel first.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
-
         return None
 
+    guild_id = ctx.guild.id
     target_channel = ctx.author.voice.channel
 
-    # --------------------------------------------------------
-    # CHECK OUR TRACKED PLAYER
-    # --------------------------------------------------------
+    async with get_voice_lock(guild_id):
+        await disconnect_stale_player(ctx.guild)
 
-    player = players.get(guild.id)
+        player = ctx.guild.voice_client
 
-    if player:
+        # --------------------------------------------------------
+        # EXISTING HEALTHY PLAYER
+        # --------------------------------------------------------
 
-        if is_valid_player(player, guild):
-
+        if player:
             player.home = ctx.channel
 
-            # Move if user is in another channel.
-            if player.channel != target_channel:
+            try:
+                connected = player.is_connected()
+            except Exception:
+                connected = False
 
+            if connected:
+                if player.channel != target_channel:
+                    try:
+                        print(
+                            f"🔄 Moving from "
+                            f"{player.channel.name} to {target_channel.name}"
+                        )
+                        await player.move_to(target_channel)
+                    except Exception as e:
+                        print(
+                            f"⚠️ Move error: "
+                            f"{type(e).__name__}: {e}"
+                        )
+                        return None
+
+                return player
+
+            # It existed but wasn't healthy.
+            print(f"⚠️ Existing player is disconnected in guild {guild_id}")
+
+            try:
+                await player.disconnect(force=True)
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+
+        # --------------------------------------------------------
+        # FRESH CONNECTION
+        # --------------------------------------------------------
+
+        last_error = None
+
+        # One retry handles transient Discord voice negotiation failures.
+        for attempt in range(1, 3):
+            try:
+                print(
+                    f"🔊 Voice connection attempt "
+                    f"{attempt}/2 to {target_channel.name}"
+                )
+
+                player = await connect_voice(
+                    target_channel,
+                    timeout=60.0
+                )
+
+                player.home = ctx.channel
+
+                print(
+                    f"✅ Connected to voice channel: "
+                    f"{target_channel.name}"
+                )
+
+                return player
+
+            except wavelink.ChannelTimeoutException as e:
+                last_error = e
+
+                print(
+                    f"⚠️ Discord voice connection timed out "
+                    f"(attempt {attempt}/2)."
+                )
+                print(
+                    "This is a Discord voice negotiation timeout, "
+                    "not a Lavalink search error."
+                )
+                traceback.print_exc()
+
+            except asyncio.TimeoutError as e:
+                last_error = e
+
+                print(
+                    f"⚠️ Discord voice connection timed out "
+                    f"(attempt {attempt}/2)."
+                )
+                traceback.print_exc()
+
+            except Exception as e:
+                last_error = e
+
+                print(
+                    f"❌ Voice connection attempt {attempt}/2 failed: "
+                    f"{type(e).__name__}: {e}"
+                )
+                traceback.print_exc()
+
+            # Clean up anything Discord/Wavelink left behind.
+            stale = ctx.guild.voice_client
+
+            if stale:
                 try:
+                    await stale.disconnect(force=True)
+                except Exception:
+                    try:
+                        await stale.disconnect()
+                    except Exception:
+                        pass
 
-                    await player.move_to(target_channel)
+            await asyncio.sleep(1.0)
 
-                except Exception as error:
-
-                    print(
-                        f"⚠️ Failed to move player: "
-                        f"{type(error).__name__}: {error}"
-                    )
-
-            return player
-
-        # Old/stale player.
-        print(
-            f"⚠️ Removing stale player for guild {guild.id}"
-        )
-
-        await remove_player(guild.id)
-
-
-    # --------------------------------------------------------
-    # CHECK DISCORD VOICE CLIENT
-    # --------------------------------------------------------
-
-    existing = guild.voice_client
-
-    if existing:
-
-        try:
-            await existing.disconnect()
-        except Exception:
-            pass
-
-        players.pop(guild.id, None)
-
-
-    # --------------------------------------------------------
-    # CONNECT
-    # --------------------------------------------------------
-
-    try:
-
-        print(
-            f"🔊 Connecting to voice channel: "
-            f"{target_channel.name}"
-        )
-
-        player = await target_channel.connect(
-            cls=wavelink.Player
-        )
-
-        player.home = ctx.channel
-
-        players[guild.id] = player
-
-        print(
-            f"✅ Connected to {target_channel.name}"
-        )
-
-        return player
-
-    except Exception as error:
+        # --------------------------------------------------------
+        # BOTH ATTEMPTS FAILED
+        # --------------------------------------------------------
 
         print()
         print("========================================")
         print("❌ VOICE CONNECTION ERROR")
         print("========================================")
 
-        traceback.print_exc()
+        if last_error:
+            print(
+                f"{type(last_error).__name__}: "
+                f"{last_error}"
+            )
 
         print("========================================")
+
+        error_text = (
+            "Discord voice connection timed out twice.\n\n"
+            "Lavalink is connected, but Discord voice negotiation "
+            "did not finish. Try joining/leaving the voice channel "
+            "and run the command again."
+        )
+
+        if last_error and not isinstance(
+            last_error,
+            (
+                wavelink.ChannelTimeoutException,
+                asyncio.TimeoutError,
+            )
+        ):
+            error_text = (
+                f"`{type(last_error).__name__}: {last_error}`"
+            )
 
         await ctx.send(
             embed=make_embed(
                 f"{ERROR} Voice Connection Failed",
-                f"`{type(error).__name__}: {error}`",
-                COLOR_ERROR,
+                error_text,
+                COLOR_ERROR
             )
         )
 
@@ -562,128 +574,18 @@ async def get_player(ctx):
 
 
 # ============================================================
-# RECONNECT PLAYER
+# IDLE SYSTEM
 # ============================================================
 
-async def reconnect_player(ctx):
+def cancel_idle(guild_id):
 
-    guild_id = ctx.guild.id
-
-    print(
-        f"🔄 Rebuilding Lavalink player "
-        f"for guild {guild_id}"
-    )
-
-    old_player = players.pop(guild_id, None)
-
-    cancel_idle(guild_id)
-
-    if old_player:
-
-        try:
-            await old_player.disconnect()
-        except Exception:
-            pass
-
-    # Give Discord/Lavalink a moment to clean the old session.
-    await asyncio.sleep(1)
-
-    return await get_player(ctx)
-
-
-# ============================================================
-# PLAY WITH RECOVERY
-# ============================================================
-
-async def play_track(
-    ctx,
-    player: wavelink.Player,
-    track,
-):
-
-    try:
-
-        await player.play(track)
-
-        return True
-
-    except Exception as first_error:
-
-        error_text = str(first_error).lower()
-
-        # ----------------------------------------------------
-        # LAVALINK 404 / DEAD PLAYER SESSION
-        # ----------------------------------------------------
-
-        if (
-            "404" in error_text
-            or "not found" in error_text
-            or "/v4/sessions/" in error_text
-        ):
-
-            print()
-            print("========================================")
-            print("⚠️ LAVALINK PLAYER SESSION LOST")
-            print("========================================")
-
-            print(
-                f"{type(first_error).__name__}: "
-                f"{first_error}"
-            )
-
-            print("🔄 Reconnecting player...")
-
-            traceback.print_exc()
-
-            new_player = await reconnect_player(ctx)
-
-            if not new_player:
-
-                return False
-
-            try:
-
-                await new_player.play(track)
-
-                print("✅ Playback recovered.")
-
-                return True
-
-            except Exception as second_error:
-
-                print("❌ Playback recovery failed.")
-
-                print(
-                    f"{type(second_error).__name__}: "
-                    f"{second_error}"
-                )
-
-                traceback.print_exc()
-
-                return False
-
-        # ----------------------------------------------------
-        # OTHER ERROR
-        # ----------------------------------------------------
-
-        print("❌ Playback failed.")
-
-        traceback.print_exc()
-
-        return False
-
-
-# ============================================================
-# IDLE DISCONNECT
-# ============================================================
-
-def cancel_idle(guild_id: int):
-
-    task = idle_tasks.pop(guild_id, None)
+    task = idle_tasks.get(guild_id)
 
     if task and not task.done():
 
         task.cancel()
+
+    idle_tasks.pop(guild_id, None)
 
 
 def schedule_idle(player):
@@ -708,7 +610,7 @@ def schedule_idle(player):
 
             return
 
-        current = players.get(guild_id)
+        current = player.guild.voice_client
 
         if not current:
             return
@@ -716,25 +618,23 @@ def schedule_idle(player):
         if guild_247.get(guild_id, False):
             return
 
-        try:
+        if (
+            not current.playing
+            and not current.current
+            and not current.queue
+        ):
 
-            if (
-                not current.playing
-                and not current.current
-                and not current.queue
-            ):
+            try:
+
+                await current.disconnect()
 
                 print(
-                    f"👋 Idle timeout: "
-                    f"disconnecting from "
-                    f"{player.guild.name}"
+                    f"👋 Auto-disconnected "
+                    f"from {player.guild.name}"
                 )
 
-                await remove_player(guild_id)
-
-        except Exception:
-
-            traceback.print_exc()
+            except Exception:
+                pass
 
     idle_tasks[guild_id] = asyncio.create_task(
         disconnect_later()
@@ -745,32 +645,29 @@ def schedule_idle(player):
 # NOW PLAYING EMBED
 # ============================================================
 
-def now_playing_embed(
-    track,
-    player,
-):
+def now_playing_embed(track, player):
 
     artist = getattr(
         track,
         "author",
-        "Unknown Artist",
+        "Unknown Artist"
     )
 
     position = getattr(
         player,
         "position",
-        0,
+        0
     )
 
     length = getattr(
         track,
         "length",
-        None,
+        None
     )
 
     mode = guild_loop.get(
         player.guild.id,
-        "off",
+        "off"
     )
 
     description = (
@@ -784,13 +681,12 @@ def now_playing_embed(
     embed = discord.Embed(
         title=f"{SPOTIFY} Now Playing",
         description=description,
-        color=COLOR_MUSIC,
+        color=COLOR_MUSIC
     )
 
-    image = get_artwork(track)
+    image = artwork(track)
 
     if image:
-
         embed.set_image(url=image)
 
     embed.set_footer(
@@ -811,19 +707,9 @@ async def play_next(player):
 
     guild_id = player.guild.id
 
-    # Player must still be valid.
-    if not is_valid_player(player, player.guild):
-
-        print(
-            f"⚠️ play_next ignored: invalid player "
-            f"for guild {guild_id}"
-        )
-
-        return
-
     mode = guild_loop.get(
         guild_id,
-        "off",
+        "off"
     )
 
     current = player.current
@@ -834,14 +720,15 @@ async def play_next(player):
 
     if mode == "track" and current:
 
-        success = await play_track(
-            player.home,
-            player,
-            current,
-        )
+        try:
 
-        if success:
+            await player.play(current)
+
             return
+
+        except Exception:
+
+            traceback.print_exc()
 
     # --------------------------------------------------------
     # QUEUE LOOP
@@ -861,33 +748,21 @@ async def play_next(player):
     # NEXT TRACK
     # --------------------------------------------------------
 
-    while player.queue:
+    if player.queue:
 
         try:
 
             next_track = player.queue.get()
 
-        except Exception:
-
-            traceback.print_exc()
-
-            break
-
-        success = await play_track(
-            player.home,
-            player,
-            next_track,
-        )
-
-        if success:
+            await player.play(next_track)
 
             return
 
-        # If this track failed, continue with next one.
-        print(
-            f"⚠️ Skipping failed track: "
-            f"{getattr(next_track, 'title', 'Unknown')}"
-        )
+        except Exception:
+
+            print("❌ Failed to play next track.")
+
+            traceback.print_exc()
 
     # --------------------------------------------------------
     # NOTHING LEFT
@@ -904,69 +779,52 @@ class MusicControls(discord.ui.View):
 
     def __init__(self):
 
-        super().__init__(
-            timeout=None
-        )
-
+        super().__init__(timeout=None)
 
     async def get_player(self, interaction):
 
-        guild = interaction.guild
+        player = interaction.guild.voice_client
 
-        if guild is None:
-
-            await interaction.response.send_message(
-                "This button can only be used in a server.",
-                ephemeral=True,
-            )
-
-            return None
-
-        player = players.get(guild.id)
-
-        if not player or not is_valid_player(
-            player,
-            guild,
-        ):
+        if not player:
 
             await interaction.response.send_message(
                 "I'm not connected to a voice channel.",
-                ephemeral=True,
+                ephemeral=True
             )
 
             return None
 
         if (
             not interaction.user.voice
-            or interaction.user.voice.channel != player.channel
+            or
+            interaction.user.voice.channel != player.channel
         ):
 
             await interaction.response.send_message(
                 "You must be in my voice channel.",
-                ephemeral=True,
+                ephemeral=True
             )
 
             return None
 
         return player
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # PAUSE
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(
             name="776450pause",
-            id=1537702507210612786,
+            id=1537702507210612786
         ),
         style=discord.ButtonStyle.secondary,
-        custom_id="furious:pause",
+        custom_id="furious:pause"
     )
     async def pause_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button
     ):
 
         player = await self.get_player(
@@ -976,54 +834,40 @@ class MusicControls(discord.ui.View):
         if not player:
             return
 
-        try:
+        if player.paused:
 
-            if player.paused:
-
-                await player.pause(False)
-
-                await interaction.response.send_message(
-                    "▶️ Resumed.",
-                    ephemeral=True,
-                )
-
-            else:
-
-                await player.pause(True)
-
-                await interaction.response.send_message(
-                    f"{PAUSE} Paused.",
-                    ephemeral=True,
-                )
-
-        except Exception as error:
+            await player.pause(False)
 
             await interaction.response.send_message(
-                f"{ERROR} Failed to change playback state.",
-                ephemeral=True,
+                "▶️ Resumed.",
+                ephemeral=True
             )
 
-            print(
-                f"Pause error: {type(error).__name__}: {error}"
+        else:
+
+            await player.pause(True)
+
+            await interaction.response.send_message(
+                f"{PAUSE} Paused.",
+                ephemeral=True
             )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # SKIP
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji=discord.PartialEmoji(
             name="22838skip",
-            id=1537702524218511452,
+            id=1537702524218511452
         ),
         style=discord.ButtonStyle.secondary,
-        custom_id="furious:skip",
+        custom_id="furious:skip"
     )
     async def skip_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button
     ):
 
         player = await self.get_player(
@@ -1037,45 +881,31 @@ class MusicControls(discord.ui.View):
 
             await interaction.response.send_message(
                 "Nothing is playing.",
-                ephemeral=True,
+                ephemeral=True
             )
 
             return
 
-        try:
+        await player.skip()
 
-            await player.skip()
+        await interaction.response.send_message(
+            f"{SKIP} Skipped.",
+            ephemeral=True
+        )
 
-            await interaction.response.send_message(
-                f"{SKIP} Skipped.",
-                ephemeral=True,
-            )
-
-        except Exception as error:
-
-            await interaction.response.send_message(
-                f"{ERROR} Skip failed.",
-                ephemeral=True,
-            )
-
-            print(
-                f"Skip error: {type(error).__name__}: {error}"
-            )
-
-
-    # ========================================================
+    # --------------------------------------------------------
     # STOP
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji="⏹️",
         style=discord.ButtonStyle.danger,
-        custom_id="furious:stop",
+        custom_id="furious:stop"
     )
     async def stop_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button
     ):
 
         player = await self.get_player(
@@ -1085,43 +915,34 @@ class MusicControls(discord.ui.View):
         if not player:
             return
 
-        guild_id = interaction.guild.id
-
         player.queue.clear()
 
-        guild_loop[guild_id] = "off"
+        guild_loop[
+            interaction.guild.id
+        ] = "off"
 
         save_data()
 
-        try:
-
-            await player.stop()
-
-        except Exception:
-
-            traceback.print_exc()
+        await player.stop()
 
         await interaction.response.send_message(
             "⏹️ Stopped and cleared the queue.",
-            ephemeral=True,
+            ephemeral=True
         )
 
-        schedule_idle(player)
-
-
-    # ========================================================
+    # --------------------------------------------------------
     # LOOP
-    # ========================================================
+    # --------------------------------------------------------
 
     @discord.ui.button(
         emoji="🔁",
         style=discord.ButtonStyle.secondary,
-        custom_id="furious:loop",
+        custom_id="furious:loop"
     )
     async def loop_button(
         self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
+        interaction,
+        button
     ):
 
         player = await self.get_player(
@@ -1134,14 +955,12 @@ class MusicControls(discord.ui.View):
         modes = [
             "off",
             "track",
-            "queue",
+            "queue"
         ]
 
-        guild_id = interaction.guild.id
-
         current = guild_loop.get(
-            guild_id,
-            "off",
+            interaction.guild.id,
+            "off"
         )
 
         next_mode = modes[
@@ -1149,14 +968,16 @@ class MusicControls(discord.ui.View):
             % len(modes)
         ]
 
-        guild_loop[guild_id] = next_mode
+        guild_loop[
+            interaction.guild.id
+        ] = next_mode
 
         save_data()
 
         await interaction.response.send_message(
             f"🔁 Loop: "
             f"**{loop_name(next_mode)}**",
-            ephemeral=True,
+            ephemeral=True
         )
 
 
@@ -1202,41 +1023,36 @@ async def on_wavelink_track_start(payload):
     if not player:
         return
 
-    guild_id = player.guild.id
-
-    cancel_idle(guild_id)
-
-    players[guild_id] = player
+    cancel_idle(
+        player.guild.id
+    )
 
     print(
         f"🎵 Playing: "
         f"{payload.track.title}"
     )
 
-    # Send Now Playing only here.
-    # This prevents duplicate messages.
     channel = getattr(
         player,
         "home",
-        None,
+        None
     )
 
-    if not channel:
-        return
+    if channel:
 
-    try:
+        try:
 
-        await channel.send(
-            embed=now_playing_embed(
-                payload.track,
-                player,
-            ),
-            view=MusicControls(),
-        )
+            await channel.send(
+                embed=now_playing_embed(
+                    payload.track,
+                    player
+                ),
+                view=MusicControls()
+            )
 
-    except Exception:
+        except Exception:
 
-        traceback.print_exc()
+            traceback.print_exc()
 
 
 # ============================================================
@@ -1254,7 +1070,7 @@ async def on_wavelink_track_end(payload):
     reason = getattr(
         payload,
         "reason",
-        None,
+        None
     )
 
     print(
@@ -1263,7 +1079,6 @@ async def on_wavelink_track_end(payload):
         f"({reason})"
     )
 
-    # Don't advance when another track replaced it.
     if str(reason).lower() == "replaced":
         return
 
@@ -1292,11 +1107,13 @@ async def on_wavelink_track_exception(payload):
         )
 
         print(
-            f"URI: {getattr(track, 'uri', None)}"
+            f"URI: "
+            f"{getattr(track, 'uri', None)}"
         )
 
     print(
-        f"Exception: {payload.exception}"
+        f"Exception: "
+        f"{payload.exception}"
     )
 
     print("========================================")
@@ -1306,7 +1123,7 @@ async def on_wavelink_track_exception(payload):
         channel = getattr(
             player,
             "home",
-            None,
+            None
         )
 
         if channel:
@@ -1320,12 +1137,11 @@ async def on_wavelink_track_exception(payload):
                             f"**{track.title if track else 'Track'}** "
                             f"couldn't be played."
                         ),
-                        COLOR_ERROR,
+                        COLOR_ERROR
                     )
                 )
 
             except Exception:
-
                 pass
 
 
@@ -1357,24 +1173,17 @@ async def on_wavelink_track_stuck(payload):
 async def on_voice_state_update(
     member,
     before,
-    after,
+    after
 ):
 
     if member.bot:
         return
 
-    # Only inspect players Furious actually manages.
-    for guild_id, player in list(players.items()):
+    for player in list(bot.voice_clients):
 
         if guild_247.get(
-            guild_id,
-            False,
-        ):
-            continue
-
-        if not is_valid_player(
-            player,
-            player.guild,
+            player.guild.id,
+            False
         ):
             continue
 
@@ -1384,22 +1193,25 @@ async def on_voice_state_update(
             continue
 
         humans = [
-            member
-            for member in channel.members
-            if not member.bot
+            m
+            for m in channel.members
+            if not m.bot
         ]
 
-        # Nobody remains in VC.
         if not humans:
 
-            print(
-                f"👋 Empty VC: "
-                f"{player.guild.name}"
-            )
+            try:
 
-            await remove_player(
-                guild_id
-            )
+                await player.disconnect()
+
+                print(
+                    f"👋 Empty VC, "
+                    f"disconnected from "
+                    f"{player.guild.name}"
+                )
+
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -1410,31 +1222,28 @@ async def on_voice_state_update(
 async def play(
     ctx,
     *,
-    query: str,
+    query: str
 ):
 
-    if ctx.guild is None:
+    player = await get_player(ctx)
+
+    if not player:
         return
 
-    guild_id = ctx.guild.id
+    cancel_idle(
+        ctx.guild.id
+    )
 
-    lock = get_lock(guild_id)
-
-    async with lock:
-
-        player = await get_player(ctx)
-
-        if not player:
-            return
-
-        cancel_idle(guild_id)
+    try:
 
         print()
         print("========================================")
         print(f"🔎 Input: {query}")
         print("========================================")
 
-        track = await search_track(query)
+        track = await search_youtube(
+            query
+        )
 
         if not track:
 
@@ -1445,14 +1254,15 @@ async def play(
                         f"No YouTube results found "
                         f"for `{query}`."
                     ),
-                    COLOR_ERROR,
+                    COLOR_ERROR
                 )
             )
 
             return
 
         print(
-            f"🎵 Found: {track.title}"
+            f"🎵 Found: "
+            f"{track.title}"
         )
 
         print(
@@ -1466,30 +1276,9 @@ async def play(
 
         if player.current:
 
-            try:
+            player.queue.put(track)
 
-                player.queue.put(track)
-
-                position = len(player.queue)
-
-            except Exception as error:
-
-                print(
-                    f"❌ Queue error: "
-                    f"{type(error).__name__}: {error}"
-                )
-
-                traceback.print_exc()
-
-                await ctx.send(
-                    embed=make_embed(
-                        f"{ERROR} Queue Error",
-                        "I couldn't add that track to the queue.",
-                        COLOR_ERROR,
-                    )
-                )
-
-                return
+            position = len(player.queue)
 
             await ctx.send(
                 embed=make_embed(
@@ -1498,7 +1287,7 @@ async def play(
                         f"**{track.title}**\n"
                         f"Position: `#{position}`"
                     ),
-                    COLOR_SUCCESS,
+                    COLOR_SUCCESS
                 )
             )
 
@@ -1508,29 +1297,33 @@ async def play(
         # NOTHING PLAYING
         # ----------------------------------------------------
 
-        success = await play_track(
-            ctx,
-            player,
-            track,
+        await player.play(track)
+
+        await ctx.send(
+            embed=make_embed(
+                f"{TICK} Now Playing",
+                f"**{track.title}**",
+                COLOR_SUCCESS
+            ),
+            view=MusicControls()
         )
 
-        if not success:
+    except Exception as e:
 
-            await ctx.send(
-                embed=make_embed(
-                    f"{ERROR} Playback Error",
-                    (
-                        "I couldn't start this track. "
-                        "The Lavalink player session may "
-                        "have been recreated."
-                    ),
-                    COLOR_ERROR,
-                )
+        print()
+        print("========================================")
+        print("❌ PLAY COMMAND ERROR")
+        print("========================================")
+
+        traceback.print_exc()
+
+        await ctx.send(
+            embed=make_embed(
+                f"{ERROR} Playback Error",
+                f"`{type(e).__name__}: {e}`",
+                COLOR_ERROR
             )
-
-            return
-
-        # Now Playing is sent by on_wavelink_track_start.
+        )
 
 
 # ============================================================
@@ -1540,68 +1333,29 @@ async def play(
 @bot.command()
 async def skip(ctx):
 
-    if ctx.guild is None:
-        return
+    player = ctx.guild.voice_client
 
-    player = players.get(
-        ctx.guild.id
-    )
-
-    if not player or not is_valid_player(
-        player,
-        ctx.guild,
-    ):
-
-        await ctx.send(
-            embed=make_embed(
-                "❌ Nothing Playing",
-                "There is no active player.",
-                COLOR_ERROR,
-            )
-        )
-
-        return
-
-    if not player.current:
+    if not player or not player.current:
 
         await ctx.send(
             embed=make_embed(
                 "❌ Nothing Playing",
                 "There is no track playing.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
         return
 
-    try:
+    await player.skip()
 
-        await player.skip()
-
-        await ctx.send(
-            embed=make_embed(
-                f"{SKIP} Skipped",
-                "Skipped the current track.",
-                COLOR_SUCCESS,
-            )
+    await ctx.send(
+        embed=make_embed(
+            f"{SKIP} Skipped",
+            "Skipped the current track.",
+            COLOR_SUCCESS
         )
-
-    except Exception as error:
-
-        print(
-            f"❌ Skip error: "
-            f"{type(error).__name__}: {error}"
-        )
-
-        traceback.print_exc()
-
-        await ctx.send(
-            embed=make_embed(
-                f"{ERROR} Skip Failed",
-                f"`{type(error).__name__}: {error}`",
-                COLOR_ERROR,
-            )
-        )
+    )
 
 
 # ============================================================
@@ -1611,12 +1365,7 @@ async def skip(ctx):
 @bot.command()
 async def pause(ctx):
 
-    if ctx.guild is None:
-        return
-
-    player = players.get(
-        ctx.guild.id
-    )
+    player = ctx.guild.voice_client
 
     if not player or not player.current:
 
@@ -1624,47 +1373,33 @@ async def pause(ctx):
             embed=make_embed(
                 "❌ Nothing Playing",
                 "There is no track playing.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
         return
 
-    try:
+    if player.paused:
 
-        if player.paused:
-
-            await player.pause(False)
-
-            await ctx.send(
-                embed=make_embed(
-                    "▶️ Resumed",
-                    "Playback resumed.",
-                    COLOR_SUCCESS,
-                )
-            )
-
-        else:
-
-            await player.pause(True)
-
-            await ctx.send(
-                embed=make_embed(
-                    f"{PAUSE} Paused",
-                    "Playback paused.",
-                    COLOR_PAUSE,
-                )
-            )
-
-    except Exception as error:
-
-        traceback.print_exc()
+        await player.pause(False)
 
         await ctx.send(
             embed=make_embed(
-                f"{ERROR} Pause Failed",
-                f"`{type(error).__name__}: {error}`",
-                COLOR_ERROR,
+                "▶️ Resumed",
+                "Playback resumed.",
+                COLOR_SUCCESS
+            )
+        )
+
+    else:
+
+        await player.pause(True)
+
+        await ctx.send(
+            embed=make_embed(
+                f"{PAUSE} Paused",
+                "Playback paused.",
+                COLOR_PAUSE
             )
         )
 
@@ -1676,14 +1411,7 @@ async def pause(ctx):
 @bot.command()
 async def stop(ctx):
 
-    if ctx.guild is None:
-        return
-
-    guild_id = ctx.guild.id
-
-    player = players.get(
-        guild_id
-    )
+    player = ctx.guild.voice_client
 
     if not player:
 
@@ -1691,41 +1419,29 @@ async def stop(ctx):
             embed=make_embed(
                 "❌ Not Connected",
                 "I'm not in a voice channel.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
         return
 
-    try:
+    player.queue.clear()
 
-        player.queue.clear()
-
-    except Exception:
-
-        pass
-
-    guild_loop[guild_id] = "off"
+    guild_loop[
+        ctx.guild.id
+    ] = "off"
 
     save_data()
 
-    try:
-
-        await player.stop()
-
-    except Exception:
-
-        traceback.print_exc()
+    await player.stop()
 
     await ctx.send(
         embed=make_embed(
             "⏹️ Stopped",
             "Playback stopped and queue cleared.",
-            COLOR_SUCCESS,
+            COLOR_SUCCESS
         )
     )
-
-    schedule_idle(player)
 
 
 # ============================================================
@@ -1735,12 +1451,7 @@ async def stop(ctx):
 @bot.command()
 async def queue(ctx):
 
-    if ctx.guild is None:
-        return
-
-    player = players.get(
-        ctx.guild.id
-    )
+    player = ctx.guild.voice_client
 
     if not player:
 
@@ -1748,7 +1459,7 @@ async def queue(ctx):
             embed=make_embed(
                 "📋 Queue",
                 "I'm not connected to a voice channel.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
@@ -1762,24 +1473,16 @@ async def queue(ctx):
             f"▶️ **Now:** {player.current.title}"
         )
 
-    try:
+    if player.queue:
 
-        queued_tracks = list(
-            player.queue
-        )
+        for index, track in enumerate(
+            list(player.queue),
+            start=1
+        ):
 
-    except Exception:
-
-        queued_tracks = []
-
-    for index, track in enumerate(
-        queued_tracks,
-        start=1,
-    ):
-
-        lines.append(
-            f"`{index}.` {track.title}"
-        )
+            lines.append(
+                f"`{index}.` {track.title}"
+            )
 
     if not lines:
 
@@ -1791,7 +1494,7 @@ async def queue(ctx):
         embed=make_embed(
             "📋 Music Queue",
             "\n".join(lines),
-            COLOR_MUSIC,
+            COLOR_MUSIC
         )
     )
 
@@ -1805,12 +1508,7 @@ async def queue(ctx):
 )
 async def nowplaying(ctx):
 
-    if ctx.guild is None:
-        return
-
-    player = players.get(
-        ctx.guild.id
-    )
+    player = ctx.guild.voice_client
 
     if not player or not player.current:
 
@@ -1818,7 +1516,7 @@ async def nowplaying(ctx):
             embed=make_embed(
                 "❌ Nothing Playing",
                 "There is no track playing.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
@@ -1827,9 +1525,9 @@ async def nowplaying(ctx):
     await ctx.send(
         embed=now_playing_embed(
             player.current,
-            player,
+            player
         ),
-        view=MusicControls(),
+        view=MusicControls()
     )
 
 
@@ -1840,23 +1538,18 @@ async def nowplaying(ctx):
 @bot.command()
 async def loop(
     ctx,
-    mode: Optional[str] = None,
+    mode: Optional[str] = None
 ):
-
-    if ctx.guild is None:
-        return
-
-    guild_id = ctx.guild.id
 
     modes = [
         "off",
         "track",
-        "queue",
+        "queue"
     ]
 
     current = guild_loop.get(
-        guild_id,
-        "off",
+        ctx.guild.id,
+        "off"
     )
 
     if mode:
@@ -1874,7 +1567,7 @@ async def loop(
                         "`!loop track`\n"
                         "`!loop queue`"
                     ),
-                    COLOR_ERROR,
+                    COLOR_ERROR
                 )
             )
 
@@ -1889,7 +1582,9 @@ async def loop(
             % len(modes)
         ]
 
-    guild_loop[guild_id] = current
+    guild_loop[
+        ctx.guild.id
+    ] = current
 
     save_data()
 
@@ -1897,7 +1592,7 @@ async def loop(
         embed=make_embed(
             "🔁 Loop",
             f"Loop mode: **{loop_name(current)}**",
-            COLOR_SUCCESS,
+            COLOR_SUCCESS
         )
     )
 
@@ -1909,17 +1604,16 @@ async def loop(
 @bot.command(name="247")
 async def twenty_four_seven(ctx):
 
-    if ctx.guild is None:
-        return
-
     guild_id = ctx.guild.id
 
     current = guild_247.get(
         guild_id,
-        False,
+        False
     )
 
-    guild_247[guild_id] = not current
+    guild_247[
+        guild_id
+    ] = not current
 
     save_data()
 
@@ -1933,7 +1627,7 @@ async def twenty_four_seven(ctx):
         embed=make_embed(
             "♾️ 24/7 Mode",
             f"24/7 mode: **{status}**",
-            COLOR_SUCCESS,
+            COLOR_SUCCESS
         )
     )
 
@@ -1948,21 +1642,21 @@ async def twenty_four_seven(ctx):
 )
 async def prefix(
     ctx,
-    new_prefix: Optional[str] = None,
+    new_prefix: Optional[str] = None
 ):
 
     if not new_prefix:
 
         current = guild_prefix.get(
             ctx.guild.id,
-            DEFAULT_PREFIX,
+            DEFAULT_PREFIX
         )
 
         await ctx.send(
             embed=make_embed(
                 "⚙️ Prefix",
                 f"Current prefix: `{current}`",
-                COLOR_MAIN,
+                COLOR_MAIN
             )
         )
 
@@ -1974,7 +1668,7 @@ async def prefix(
             embed=make_embed(
                 "❌ Invalid Prefix",
                 "Prefix must be 5 characters or fewer.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
@@ -1990,27 +1684,24 @@ async def prefix(
         embed=make_embed(
             "✅ Prefix Updated",
             f"New prefix: `{new_prefix}`",
-            COLOR_SUCCESS,
+            COLOR_SUCCESS
         )
     )
 
 
 @prefix.error
-async def prefix_error(
-    ctx,
-    error,
-):
+async def prefix_error(ctx, error):
 
     if isinstance(
         error,
-        commands.MissingPermissions,
+        commands.MissingPermissions
     ):
 
         await ctx.send(
             embed=make_embed(
                 "❌ Permission Required",
                 "You need **Manage Server** permission.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
@@ -2024,11 +1715,11 @@ async def help(ctx):
 
     prefix_value = guild_prefix.get(
         ctx.guild.id,
-        DEFAULT_PREFIX,
+        DEFAULT_PREFIX
     )
 
     description = (
-        "**🎵 Music**\n"
+        f"**🎵 Music**\n"
         f"`{prefix_value}play <song/url>`\n"
         f"`{prefix_value}skip`\n"
         f"`{prefix_value}pause`\n"
@@ -2037,7 +1728,7 @@ async def help(ctx):
         f"`{prefix_value}nowplaying`\n"
         f"`{prefix_value}loop`\n\n"
 
-        "**⚙️ Settings**\n"
+        f"**⚙️ Settings**\n"
         f"`{prefix_value}247`\n"
         f"`{prefix_value}prefix <new prefix>`"
     )
@@ -2046,37 +1737,37 @@ async def help(ctx):
         embed=make_embed(
             "🔥 Furious Help",
             description,
-            COLOR_MAIN,
+            COLOR_MAIN
         )
     )
 
 
 # ============================================================
-# COMMAND ERROR
+# GENERAL COMMAND ERROR
 # ============================================================
 
 @bot.event
 async def on_command_error(
     ctx,
-    error,
+    error
 ):
 
     if isinstance(
         error,
-        commands.CommandNotFound,
+        commands.CommandNotFound
     ):
         return
 
     if isinstance(
         error,
-        commands.MissingRequiredArgument,
+        commands.MissingRequiredArgument
     ):
 
         await ctx.send(
             embed=make_embed(
                 f"{ERROR} Missing Argument",
                 "You didn't provide all required arguments.",
-                COLOR_ERROR,
+                COLOR_ERROR
             )
         )
 
@@ -2084,22 +1775,8 @@ async def on_command_error(
 
     if isinstance(
         error,
-        commands.NoPrivateMessage,
+        commands.NoPrivateMessage
     ):
-        return
-
-    if isinstance(
-        error,
-        commands.MissingPermissions,
-    ):
-
-        await ctx.send(
-            embed=make_embed(
-                f"{ERROR} Permission Required",
-                "You don't have permission to use this command.",
-                COLOR_ERROR,
-            )
-        )
 
         return
 
@@ -2111,37 +1788,14 @@ async def on_command_error(
     traceback.print_exception(
         type(error),
         error,
-        error.__traceback__,
+        error.__traceback__
     )
 
     print("========================================")
 
 
 # ============================================================
-# SHUTDOWN CLEANUP
-# ============================================================
-
-async def cleanup_players():
-
-    print("🧹 Cleaning up players...")
-
-    for guild_id, player in list(
-        players.items()
-    ):
-
-        try:
-
-            await player.disconnect()
-
-        except Exception:
-
-            pass
-
-    players.clear()
-
-
-# ============================================================
-# START
+# START BOT
 # ============================================================
 
 if __name__ == "__main__":
