@@ -14,39 +14,45 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 LAVALINK_HOST = os.getenv("LAVALINK_HOST")
-LAVALINK_PORT = os.getenv("LAVALINK_PORT", "443")
+LAVALINK_PORT = os.getenv("LAVALINK_PORT", "2333")
 LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD")
+LAVALINK_SCHEME = os.getenv("LAVALINK_SCHEME", "https")
 
 
-if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is missing from .env")
+if not DISCORD_TOKEN:
+    raise RuntimeError("DISCORD_TOKEN is missing")
 
 if not LAVALINK_HOST:
-    raise RuntimeError("LAVALINK_HOST is missing from .env")
+    raise RuntimeError("LAVALINK_HOST is missing")
 
 if not LAVALINK_PASSWORD:
-    raise RuntimeError("LAVALINK_PASSWORD is missing from .env")
+    raise RuntimeError("LAVALINK_PASSWORD is missing")
 
 
 # ============================================================
-# LAVALINK URL
+# LAVALINK URI
 # ============================================================
 
 host = LAVALINK_HOST.strip()
 
-host = host.replace("https://", "")
-host = host.replace("http://", "")
+for prefix in ("https://", "http://"):
+    if host.startswith(prefix):
+        host = host[len(prefix):]
+
 host = host.rstrip("/")
 
-LAVALINK_URI = f"https://{host}:{LAVALINK_PORT}"
+if LAVALINK_PORT:
+    LAVALINK_URI = f"{LAVALINK_SCHEME}://{host}:{LAVALINK_PORT}"
+else:
+    LAVALINK_URI = f"{LAVALINK_SCHEME}://{host}"
 
 print(f"🔌 Lavalink URI: {LAVALINK_URI}")
 
 
 # ============================================================
-# DISCORD BOT
+# DISCORD
 # ============================================================
 
 intents = discord.Intents.default()
@@ -60,56 +66,178 @@ bot = commands.Bot(
 
 
 # ============================================================
-# BOT READY
+# GLOBAL STATE
+# ============================================================
+
+node_connected = asyncio.Event()
+
+
+# ============================================================
+# READY
 # ============================================================
 
 @bot.event
 async def on_ready():
-
-    print("=" * 50)
+    print("=" * 60)
     print(f"✅ Logged in as: {bot.user}")
     print(f"🆔 Bot ID: {bot.user.id}")
-    print("=" * 50)
+    print("=" * 60)
 
+    # Avoid creating duplicate nodes after reconnects.
     if wavelink.Pool.nodes:
         print("ℹ️ Lavalink node already exists.")
         return
 
     try:
-
         node = wavelink.Node(
             identifier="Railway",
             uri=LAVALINK_URI,
             password=LAVALINK_PASSWORD,
-            retries=10
+            retries=10,
         )
 
         await wavelink.Pool.connect(
             nodes=[node],
-            client=bot
+            client=bot,
         )
 
-        print("✅ Lavalink connection requested.")
+        print("🔌 Lavalink connection started.")
 
-    except Exception as e:
-
-        print("=" * 50)
+    except Exception as exc:
+        print("=" * 60)
         print("❌ LAVALINK CONNECTION ERROR")
-        print(f"Type: {type(e).__name__}")
-        print(f"Error: {e}")
-        print("=" * 50)
+        print(f"Type: {type(exc).__name__}")
+        print(f"Error: {exc}")
+        print("=" * 60)
 
 
 # ============================================================
-# LAVALINK READY
+# LAVALINK EVENTS
 # ============================================================
 
 @bot.event
 async def on_wavelink_node_ready(payload):
+    node_connected.set()
 
-    print("=" * 50)
-    print(f"🟢 Lavalink ready: {payload.node.identifier}")
-    print("=" * 50)
+    print("=" * 60)
+    print(f"🟢 Lavalink READY: {payload.node.identifier}")
+    print(f"📡 Node status: {payload.node.status}")
+    print("=" * 60)
+
+
+@bot.event
+async def on_wavelink_node_closed(payload):
+    node_connected.clear()
+
+    print("=" * 60)
+    print("🔴 Lavalink NODE CLOSED")
+    print(f"Node: {payload.node.identifier}")
+    print("=" * 60)
+
+
+@bot.event
+async def on_wavelink_track_start(payload):
+    player = payload.player
+    track = payload.track
+
+    print("=" * 60)
+    print("▶️ TRACK START")
+    print(f"Guild: {player.guild.id if player and player.guild else 'Unknown'}")
+    print(f"Track: {track.title}")
+    print(f"Player connected: {player.connected if player else False}")
+    print(f"Player ping: {player.ping if player else 'Unknown'}")
+    print("=" * 60)
+
+
+@bot.event
+async def on_wavelink_track_exception(payload):
+    print("=" * 60)
+    print("❌ TRACK EXCEPTION")
+    print(f"Track: {payload.track.title}")
+    print(f"Exception: {payload.exception}")
+    print(f"Message: {payload.exception.message}")
+    print(f"Severity: {payload.exception.severity}")
+    print(f"Cause: {payload.exception.cause}")
+    print("=" * 60)
+
+
+@bot.event
+async def on_wavelink_track_stuck(payload):
+    print("=" * 60)
+    print("⚠️ TRACK STUCK")
+    print(f"Track: {payload.track.title}")
+    print(f"Threshold: {payload.threshold} ms")
+    print("=" * 60)
+
+
+@bot.event
+async def on_wavelink_player_update(payload):
+    player = payload.player
+
+    if player is None:
+        return
+
+    print(
+        f"📶 PLAYER UPDATE | "
+        f"guild={player.guild.id if player.guild else 'unknown'} "
+        f"connected={payload.connected} "
+        f"ping={payload.ping}ms "
+        f"position={payload.position}ms"
+    )
+
+
+@bot.event
+async def on_wavelink_websocket_closed(payload):
+    print("=" * 60)
+    print("🔴 LAVALINK VOICE WEBSOCKET CLOSED")
+    print(f"Code: {payload.code}")
+    print(f"Reason: {payload.reason}")
+    print(f"By remote: {payload.by_remote}")
+    print("=" * 60)
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+async def get_player(ctx: commands.Context) -> wavelink.Player | None:
+    player = ctx.guild.voice_client
+
+    if isinstance(player, wavelink.Player):
+        return player
+
+    return None
+
+
+async def ensure_player(ctx: commands.Context) -> wavelink.Player:
+    if not ctx.author.voice:
+        raise RuntimeError("Join a voice channel first.")
+
+    player = await get_player(ctx)
+
+    if player:
+        if player.channel != ctx.author.voice.channel:
+            await player.move_to(ctx.author.voice.channel)
+
+        return player
+
+    channel = ctx.author.voice.channel
+
+    print(f"🔵 Connecting to Discord voice: {channel.name}")
+
+    player = await channel.connect(
+        cls=wavelink.Player,
+        self_deaf=True,
+    )
+
+    print(
+        f"🟢 Discord voice connected | "
+        f"guild={ctx.guild.id} "
+        f"channel={channel.name} "
+        f"connected={player.connected}"
+    )
+
+    return player
 
 
 # ============================================================
@@ -117,49 +245,24 @@ async def on_wavelink_node_ready(payload):
 # ============================================================
 
 @bot.command()
-async def join(ctx):
-
-    if not ctx.author.voice:
-        await ctx.send(
-            "❌ Join a voice channel first."
-        )
-        return
-
-    channel = ctx.author.voice.channel
+async def join(ctx: commands.Context):
 
     try:
-
-        player = ctx.guild.voice_client
-
-        if player:
-
-            await ctx.send(
-                "✅ I'm already connected."
-            )
-            return
-
-        print(f"🔵 Joining: {channel.name}")
-
-        player = await channel.connect(
-            cls=wavelink.Player
-        )
-
-        print("🟢 Discord voice connected.")
+        player = await ensure_player(ctx)
 
         await ctx.send(
-            f"✅ Joined **{channel.name}**"
+            f"✅ Joined **{player.channel.name}**"
         )
 
-    except Exception as e:
-
-        print("=" * 50)
-        print("❌ VOICE CONNECTION ERROR")
-        print(f"Type: {type(e).__name__}")
-        print(f"Error: {e}")
-        print("=" * 50)
+    except Exception as exc:
+        print("=" * 60)
+        print("❌ JOIN ERROR")
+        print(f"Type: {type(exc).__name__}")
+        print(f"Error: {exc}")
+        print("=" * 60)
 
         await ctx.send(
-            f"❌ Voice error: `{type(e).__name__}`"
+            f"❌ Voice error: `{type(exc).__name__}`"
         )
 
 
@@ -168,128 +271,114 @@ async def join(ctx):
 # ============================================================
 
 @bot.command()
-async def play(ctx, *, query: str):
-
-    if not ctx.author.voice:
-
-        await ctx.send(
-            "❌ Join a voice channel first."
-        )
-        return
+async def play(ctx: commands.Context, *, query: str):
 
     try:
+        # --------------------------------------------
+        # Wait for Lavalink
+        # --------------------------------------------
 
-        # ----------------------------------------------------
-        # Get existing player
-        # ----------------------------------------------------
+        if not node_connected.is_set():
 
-        player = ctx.guild.voice_client
+            print("⏳ Waiting for Lavalink...")
 
-        # ----------------------------------------------------
-        # Connect if not already connected
-        # ----------------------------------------------------
+            try:
+                await asyncio.wait_for(
+                    node_connected.wait(),
+                    timeout=15,
+                )
 
-        if not player:
+            except asyncio.TimeoutError:
+                await ctx.send(
+                    "❌ Lavalink is not ready."
+                )
+                return
 
-            channel = ctx.author.voice.channel
+        # --------------------------------------------
+        # Voice connection
+        # --------------------------------------------
 
-            print(
-                f"🔵 Connecting to: {channel.name}"
-            )
-
-            player = await channel.connect(
-                cls=wavelink.Player
-            )
-
-            print(
-                "🟢 Discord voice connected."
-            )
-
-        # ----------------------------------------------------
-        # Verify player
-        # ----------------------------------------------------
-
-        if not isinstance(player, wavelink.Player):
-
-            await ctx.send(
-                "❌ Voice player is invalid."
-            )
-            return
-
-        # ----------------------------------------------------
-        # Search YouTube
-        # ----------------------------------------------------
+        player = await ensure_player(ctx)
 
         print(
-            f"🔎 Searching YouTube: {query}"
+            f"🎵 Player state before search | "
+            f"connected={player.connected} "
+            f"playing={player.playing} "
+            f"ping={player.ping}"
         )
+
+        # --------------------------------------------
+        # Search
+        # --------------------------------------------
+
+        print(f"🔎 Searching: {query}")
+
+        if query.startswith(("http://", "https://")):
+            search_query = query
+        else:
+            search_query = f"ytsearch:{query}"
 
         results = await wavelink.Playable.search(
-            query,
-            source=wavelink.TrackSource.YouTube
+            search_query
         )
 
-        # ----------------------------------------------------
-        # No results
-        # ----------------------------------------------------
-
         if not results:
-
-            await ctx.send(
-                "❌ No results found."
-            )
+            await ctx.send("❌ No results found.")
             return
 
-        # ----------------------------------------------------
-        # Get first track
-        # ----------------------------------------------------
+        # --------------------------------------------
+        # Select track
+        # --------------------------------------------
 
-        if isinstance(
-            results,
-            wavelink.Playlist
-        ):
+        if isinstance(results, wavelink.Playlist):
 
             if not results.tracks:
-
-                await ctx.send(
-                    "❌ Playlist is empty."
-                )
+                await ctx.send("❌ Playlist is empty.")
                 return
 
             track = results.tracks[0]
 
         else:
-
             track = results[0]
 
-        # ----------------------------------------------------
+        print("=" * 60)
+        print("🎵 TRACK SELECTED")
+        print(f"Title: {track.title}")
+        print(f"Author: {track.author}")
+        print(f"Identifier: {track.identifier}")
+        print(f"Source: {track.source}")
+        print("=" * 60)
+
+        # --------------------------------------------
         # Play
-        # ----------------------------------------------------
+        # --------------------------------------------
 
-        print(
-            f"🎵 Found: {track.title}"
+        started = await player.play(
+            track,
+            replace=True,
         )
 
-        await player.play(track)
-
-        print(
-            f"▶️ Playing: {track.title}"
-        )
+        print("=" * 60)
+        print("✅ PLAY REQUEST SENT")
+        print(f"Track: {started.title}")
+        print(f"Connected: {player.connected}")
+        print(f"Playing: {player.playing}")
+        print(f"Ping: {player.ping}ms")
+        print("=" * 60)
 
         await ctx.send(
             f"▶️ **{track.title}**"
         )
 
-    except Exception as e:
-
-        print("=" * 50)
+    except Exception as exc:
+        print("=" * 60)
         print("❌ PLAY ERROR")
-        print(f"Type: {type(e).__name__}")
-        print(f"Error: {e}")
-        print("=" * 50)
+        print(f"Type: {type(exc).__name__}")
+        print(f"Error: {exc}")
+        print("=" * 60)
 
         await ctx.send(
-            f"❌ Playback error: `{type(e).__name__}`"
+            f"❌ Playback error: `{type(exc).__name__}`"
         )
 
 
@@ -298,25 +387,17 @@ async def play(ctx, *, query: str):
 # ============================================================
 
 @bot.command()
-async def pause(ctx):
+async def pause(ctx: commands.Context):
 
-    player = ctx.guild.voice_client
+    player = await get_player(ctx)
 
-    if not isinstance(
-        player,
-        wavelink.Player
-    ):
-
-        await ctx.send(
-            "❌ I'm not connected."
-        )
+    if not player:
+        await ctx.send("❌ I'm not connected.")
         return
 
     await player.pause(True)
 
-    await ctx.send(
-        "⏸️ Paused."
-    )
+    await ctx.send("⏸️ Paused.")
 
 
 # ============================================================
@@ -324,25 +405,17 @@ async def pause(ctx):
 # ============================================================
 
 @bot.command()
-async def resume(ctx):
+async def resume(ctx: commands.Context):
 
-    player = ctx.guild.voice_client
+    player = await get_player(ctx)
 
-    if not isinstance(
-        player,
-        wavelink.Player
-    ):
-
-        await ctx.send(
-            "❌ I'm not connected."
-        )
+    if not player:
+        await ctx.send("❌ I'm not connected.")
         return
 
     await player.pause(False)
 
-    await ctx.send(
-        "▶️ Resumed."
-    )
+    await ctx.send("▶️ Resumed.")
 
 
 # ============================================================
@@ -350,25 +423,17 @@ async def resume(ctx):
 # ============================================================
 
 @bot.command()
-async def stop(ctx):
+async def stop(ctx: commands.Context):
 
-    player = ctx.guild.voice_client
+    player = await get_player(ctx)
 
-    if not isinstance(
-        player,
-        wavelink.Player
-    ):
-
-        await ctx.send(
-            "❌ I'm not connected."
-        )
+    if not player:
+        await ctx.send("❌ I'm not connected.")
         return
 
     await player.stop()
 
-    await ctx.send(
-        "⏹️ Stopped."
-    )
+    await ctx.send("⏹️ Stopped.")
 
 
 # ============================================================
@@ -376,24 +441,37 @@ async def stop(ctx):
 # ============================================================
 
 @bot.command()
-async def leave(ctx):
+async def leave(ctx: commands.Context):
 
-    player = ctx.guild.voice_client
+    player = await get_player(ctx)
 
-    if not isinstance(
-        player,
-        wavelink.Player
-    ):
-
-        await ctx.send(
-            "❌ I'm not in a voice channel."
-        )
+    if not player:
+        await ctx.send("❌ I'm not in a voice channel.")
         return
 
     await player.disconnect()
 
+    await ctx.send("👋 Left the voice channel.")
+
+
+# ============================================================
+# NOW PLAYING
+# ============================================================
+
+@bot.command()
+async def nowplaying(ctx: commands.Context):
+
+    player = await get_player(ctx)
+
+    if not player or not player.current:
+        await ctx.send("❌ Nothing is playing.")
+        return
+
+    track = player.current
+
     await ctx.send(
-        "👋 Left the voice channel."
+        f"🎵 **{track.title}**\n"
+        f"⏱️ `{player.position // 1000}s`"
     )
 
 
@@ -402,27 +480,51 @@ async def leave(ctx):
 # ============================================================
 
 @bot.command()
-async def ping(ctx):
+async def ping(ctx: commands.Context):
 
-    discord_ping = round(
-        bot.latency * 1000
-    )
+    discord_ping = round(bot.latency * 1000)
 
     try:
-
         node = wavelink.Pool.get_node()
 
-        await ctx.send(
-            f"🏓 Discord: `{discord_ping}ms`\n"
-            f"🎵 Lavalink: `{node.status}`"
-        )
+        if node:
+            await ctx.send(
+                f"🏓 Discord: `{discord_ping}ms`\n"
+                f"🎵 Lavalink: `{node.status}`"
+            )
+        else:
+            await ctx.send(
+                f"🏓 Discord: `{discord_ping}ms`\n"
+                f"🎵 Lavalink: `No node`"
+            )
 
     except Exception:
-
         await ctx.send(
             f"🏓 Discord: `{discord_ping}ms`\n"
-            f"🎵 Lavalink: `Not connected`"
+            f"🎵 Lavalink: `Disconnected`"
         )
+
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+@bot.event
+async def on_command_error(ctx, error):
+
+    if isinstance(error, commands.CommandNotFound):
+        return
+
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Missing command argument.")
+        return
+
+    print("=" * 60)
+    print("❌ COMMAND ERROR")
+    print(f"Command: {ctx.command}")
+    print(f"Type: {type(error).__name__}")
+    print(f"Error: {error}")
+    print("=" * 60)
 
 
 # ============================================================
@@ -432,10 +534,8 @@ async def ping(ctx):
 async def main():
 
     async with bot:
-
-        await bot.start(TOKEN)
+        await bot.start(DISCORD_TOKEN)
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())
