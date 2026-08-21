@@ -265,15 +265,19 @@ async def play(ctx, *, query: str):
         print(f"Ping before search: {player.ping}")
         print("=" * 60)
 
-        search_query = query
-        if not (query.startswith("http://") or query.startswith("https://")):
-            search_query = f"ytsearch:{query}"
+        is_url = query.startswith("http://") or query.startswith("https://")
 
-        print(f"🔎 Searching Lavalink: {search_query}")
+        print(f"🔎 Searching Lavalink: {query!r} (url={is_url})")
 
         try:
+            # IMPORTANT: wavelink.Playable.search() already applies the
+            # correct search prefix itself (default source is YouTube here).
+            # Do NOT manually prepend "ytsearch:"/"ytmsearch:" to the query
+            # yourself - doing so double-prefixes it (e.g. "ytmsearch:ytsearch:foo"),
+            # which Lavalink can't parse and just silently hangs until timeout.
+            search_kwargs = {} if is_url else {"source": wavelink.TrackSource.YouTube}
             tracks = await asyncio.wait_for(
-                wavelink.Playable.search(search_query),
+                wavelink.Playable.search(query, **search_kwargs),
                 timeout=20,
             )
         except asyncio.TimeoutError:
