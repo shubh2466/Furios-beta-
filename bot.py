@@ -199,8 +199,9 @@ async def play(ctx, *, query: str):
         # Search
         print(f"🔎 Searching: {query}")
 
-        results = await wavelink.Playable.search(query)
-
+      results = await wavelink.Playable.search(
+    f"ytsearch:{query}"
+)
         if not results:
 
             await ctx.send(
