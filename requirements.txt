@@ -1,5 +1,5 @@
-discord.py==2.7.1
+discord.py
 wavelink==3.5.1
-python-dotenv==1.2.2
-aiohttp==3.14.3
-Pillow==12.3.0
+PyNaCl
+davey
+python-dotenv
