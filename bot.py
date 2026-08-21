@@ -210,25 +210,33 @@ async def play(ctx, *, query: str):
 
             return
 
-        # Playlist
-        if isinstance(results, wavelink.Playlist):
+    # Search
+print(f"🔎 Searching: {query}")
 
-            track = results.tracks[0]
+results = await wavelink.Playable.search(
+    f"ytsearch:{query}"
+)
 
-        else:
+if not results:
+    await ctx.send("❌ No results found.")
+    return
 
-            track = results[0]
+# Playlist
+if isinstance(results, wavelink.Playlist):
+    track = results.tracks[0]
+else:
+    track = results[0]
 
-        print(f"🎵 Found: {track.title}")
+print(f"🎵 Found: {track.title}")
 
-        # Play
-        await player.play(track)
+# Play
+await player.play(track)
 
-        print(f"▶️ Playing: {track.title}")
+print(f"▶️ Playing: {track.title}")
 
-        await ctx.send(
-            f"▶️ **{track.title}**"
-        )
+await ctx.send(
+    f"▶️ **{track.title}**"
+)
 
     except Exception as e:
 
